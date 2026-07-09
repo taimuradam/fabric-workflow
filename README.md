@@ -9,7 +9,8 @@ of unsellable **wastage** across everything that did sell.
 All amounts are in **PKR (Rs)**.
 
 - Live calculations as you type — nothing to recompute by hand.
-- Products table you can add to / delete from, with one row marked as wastage.
+- Products table you can add to / delete from; wastage is entered as a single
+  lot-level field (its cost is spread over the pieces that did sell).
 - A reconciliation warning that catches data-entry mistakes (fabric received
   should equal the fabric turned into products + waste).
 - **Save / Open** past lots (local JSON files).
@@ -142,5 +143,7 @@ Revenue          = Pieces × Cost per Piece
 products + waste). If they differ by more than 0.01 kg, an orange warning appears,
 but it never blocks calculation or export.
 
-**Summary** — Total Payment = Total Cost, Total Receipt = sum of revenues, and
-**Profit = Receipt − Payment** (green if positive, red if negative).
+**Summary** — the app shows **"This lot cost you"** (= Total Cost) spread across
+the total pieces produced. Because every rupee of the lot is allocated onto a
+piece, there is no separate receipt/profit figure on screen (the Excel export
+still includes the full payment/receipt block).
