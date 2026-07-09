@@ -96,9 +96,11 @@ After the build finishes, your app is at:
 dist\TextileCosting.exe
 ```
 
-Double-click it to run. It creates a `lots\` folder next to itself the first time
-you save a lot. You can copy `TextileCosting.exe` anywhere (desktop, USB drive) —
-it's fully self-contained.
+Double-click it to run. On first launch it asks where to keep your saved lot
+files and creates a **"Fabric Lot Files"** folder there (Cancel puts it in
+Documents); Excel reports default to `Documents\Fabric Costing Reports\`. You can
+copy `TextileCosting.exe` anywhere (desktop, USB drive) — it's fully
+self-contained.
 
 > **Test the built exe, not just the script:** double-click `dist\TextileCosting.exe`,
 > enter a lot, and use **Export to Excel** to confirm openpyxl was bundled
