@@ -92,6 +92,30 @@ def reports_dir() -> Path:
     return d
 
 
+def _settings_path() -> Path:
+    return storage.app_dir() / "settings.json"
+
+
+def load_settings() -> dict:
+    """Tiny persisted preferences (e.g. last-used export folder)."""
+    try:
+        import json
+        with open(_settings_path(), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001 — missing/corrupt file: start fresh
+        return {}
+
+
+def save_settings(settings: dict) -> None:
+    try:
+        import json
+        with open(_settings_path(), "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+    except Exception:  # noqa: BLE001 — non-critical; never block the export
+        pass
+
+
 def report_filename(lot) -> str:
     """Human-friendly report name, e.g. 'Lot CVC-3 - CVC - 2026-07-09.xlsx'.
 
@@ -276,6 +300,8 @@ class CostingApp(ctk.CTk):
         # Where quick-save writes. None until the first save/open; Save As and
         # Open rebind it, so Save always updates "the file this lot lives in".
         self._current_save_path = None
+        # Persisted preferences (last-used export folder survives restarts).
+        self._settings = load_settings()
 
         self.rows = []
         self.vars = {k: ctk.StringVar() for k in (
@@ -861,14 +887,24 @@ class CostingApp(ctk.CTk):
         lot = self._current_lot()
         products = self._products_for_compute()  # incl. synthesised wastage row
         results = calculations.compute(lot, products)
+        # Open in the folder the user last exported to; fall back to the
+        # default reports folder if none is remembered (or it was deleted).
+        remembered = self._settings.get("export_dir")
+        if remembered and Path(remembered).is_dir():
+            initialdir = remembered
+        else:
+            initialdir = str(reports_dir())
         path = filedialog.asksaveasfilename(
             title="Export to Excel", defaultextension=".xlsx",
-            initialdir=str(reports_dir()),
+            initialdir=initialdir,
             initialfile=report_filename(lot),
             filetypes=[("Excel files", "*.xlsx")],
         )
         if not path:
             return
+        # Remember wherever the user actually saved for next time.
+        self._settings["export_dir"] = str(Path(path).parent)
+        save_settings(self._settings)
         try:
             excel_export.export(results, lot, path)
             messagebox.showinfo("Export to Excel",

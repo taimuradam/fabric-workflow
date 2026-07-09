@@ -12,9 +12,10 @@ build/
 dist/
 *.spec
 
-# Saved lots and exported files (local data, not source)
+# Saved lots, exported files, and app preferences (local data, not source)
 lots/
 *.xlsx
+settings.json
 
 # OS / editor cruft
 .DS_Store
