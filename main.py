@@ -1,42 +1,57 @@
 """
-main.py — Textile Lot Costing desktop app (tkinter GUI + entry point).
+main.py — Textile Lot Costing desktop app (CustomTkinter GUI + entry point).
 
 Single-window layout, top to bottom:
     Toolbar (New / Save / Open / Export)
-    Lot Info panel + live lot calculations
-    Products table (inline-editable ttk.Treeview) + Add/Delete buttons
+    Lot Info card + Lot Calculations stat grid
+    Products table (manual CTk widgets) + Add Row
     Reconciliation warning (only when weights don't add up)
-    Totals summary (bold)
+    Summary card (large, colour-coded Profit)
 
 All heavy lifting lives in calculations.py; this file is purely presentation and
 wiring. Every input change funnels into a single recompute() so the whole screen
 stays consistent, and all number parsing is tolerant so bad input never crashes.
+
+CustomTkinter has no Treeview-equivalent, so the products table is built by hand:
+a CTkScrollableFrame whose rows are strips of always-editable CTkEntry widgets
+(plus a wastage CTkCheckBox and a delete button). This keeps a consistent flat,
+rounded look instead of embedding a native-themed ttk.Treeview.
 """
 
-import tkinter as tk
 from datetime import date
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox
+
+import customtkinter as ctk
 
 import calculations
 import excel_export
 import storage
 from calculations import LotInfo, Product
 
-# Colours for the profit figure and the reconciliation warning.
-_GREEN = "#1B7F3B"
-_RED = "#C62828"
-_ORANGE = "#C55A11"
+# ----------------------------------------------------------------- palette ---
+# One restrained accent (deep teal) plus neutrals. Colours are given as plain
+# hex; appearance mode is fixed to light so we don't need light/dark pairs.
+TEAL        = "#0f766e"
+TEAL_HOVER  = "#0b5f58"
+TEAL_TINT   = "#dcebe8"   # highlighted "Adjusted Cost/KG" tile + wastage rows
+BG          = "#eef0ec"   # window background (off-white)
+CARD        = "#ffffff"
+CARD_BORDER = "#dde2dd"
+TILE_BG     = "#f3f5f2"   # read-only / computed field tint
+TEXT        = "#1f2a30"
+MUTED       = "#67757c"
+SECONDARY   = "#e4e8e3"   # secondary button fill
+SECONDARY_H = "#d6dbd5"   # secondary button hover
+GREEN       = "#15803d"
+RED         = "#b91c1c"
+ORANGE      = "#c05621"
 
-# Product table columns: (internal id, heading, width, editable?)
-_COLUMNS = [
-    ("name", "Product", 200, True),
-    ("weight", "Weight (kg)", 100, True),
-    ("pieces", "Pieces", 80, True),
-    ("wastage", "Wastage?", 80, False),   # toggled by clicking, not typed
-    ("wtpc", "Wt./Pc", 90, False),
-    ("costpc", "Cost/Pc", 110, False),
-    ("revenue", "Revenue", 120, False),
-]
+# Product table column widths (pixels). Header labels and row widgets share these
+# so the columns line up even though they live in separate frames.
+COL = {
+    "name": 210, "weight": 95, "pieces": 95, "wastage": 78,
+    "wtpc": 90, "costpc": 120, "revenue": 132, "del": 40,
+}
 
 
 def fmt(value, money=False, decimals=2):
@@ -48,136 +63,293 @@ def fmt(value, money=False, decimals=2):
     return f"{value:,.{decimals}f}"
 
 
-class CostingApp(tk.Tk):
+class ProductRow:
+    """One editable product row in the manual table (widgets + state)."""
+
+    def __init__(self, table, app, product):
+        self.app = app
+        self.frame = ctk.CTkFrame(table, fg_color="transparent")
+        self.wastage_var = ctk.IntVar(value=1 if product.is_wastage else 0)
+
+        # --- editable cells ---
+        self.name = ctk.CTkEntry(self.frame, width=COL["name"], font=app.font_body,
+                                 fg_color=CARD, border_color=CARD_BORDER)
+        self.name.insert(0, product.name or "")
+
+        self.weight = ctk.CTkEntry(self.frame, width=COL["weight"], justify="right",
+                                   font=app.font_body, fg_color=CARD, border_color=CARD_BORDER)
+        if product.weight_kg not in (None, ""):
+            self.weight.insert(0, str(product.weight_kg))
+
+        self.pieces = ctk.CTkEntry(self.frame, width=COL["pieces"], justify="right",
+                                   font=app.font_body, fg_color=CARD, border_color=CARD_BORDER)
+        if product.pieces not in (None, ""):
+            self.pieces.insert(0, str(product.pieces))
+
+        # --- wastage checkbox (centred in a fixed-width holder) ---
+        waste_holder = ctk.CTkFrame(self.frame, width=COL["wastage"], height=32,
+                                    fg_color="transparent")
+        waste_holder.pack_propagate(False)
+        self.check = ctk.CTkCheckBox(waste_holder, text="", width=24,
+                                     variable=self.wastage_var, onvalue=1, offvalue=0,
+                                     fg_color=TEAL, hover_color=TEAL_HOVER,
+                                     command=lambda: app._on_wastage(self))
+        self.check.pack(expand=True)
+
+        # --- read-only computed cells (tinted labels — clearly not editable) ---
+        self.wtpc = self._calc_label(app, COL["wtpc"])
+        self.costpc = self._calc_label(app, COL["costpc"])
+        self.revenue = self._calc_label(app, COL["revenue"])
+
+        # --- delete button ---
+        self.delete = ctk.CTkButton(
+            self.frame, text="✕", width=COL["del"], font=app.font_body,
+            fg_color="transparent", text_color=MUTED, hover_color="#f6dede",
+            command=lambda: app._delete_row(self),
+        )
+
+        # Lay the strip out left-to-right; fixed widths keep header alignment.
+        pad = 4
+        for w in (self.name, self.weight, self.pieces, waste_holder,
+                  self.wtpc, self.costpc, self.revenue, self.delete):
+            w.pack(side="left", padx=pad, pady=2)
+
+        # Live recompute on typing.
+        for e in (self.name, self.weight, self.pieces):
+            e.bind("<KeyRelease>", app.recompute)
+
+        self._apply_wastage_style(product.is_wastage)
+
+    def _calc_label(self, app, width):
+        return ctk.CTkLabel(self.frame, text="—", width=width, height=30,
+                            font=app.font_body, text_color=TEXT,
+                            fg_color=TILE_BG, corner_radius=6, anchor="e",
+                            padx=8)
+
+    def is_wastage(self):
+        return self.wastage_var.get() == 1
+
+    def to_product(self):
+        w = self.weight.get().strip()
+        p = self.pieces.get().strip()
+        return Product(
+            name=self.name.get().strip(),
+            weight_kg=w if w != "" else None,
+            pieces=p if p != "" else None,
+            is_wastage=self.is_wastage(),
+        )
+
+    def _apply_wastage_style(self, is_wastage):
+        """Wastage rows get a teal tint and no pieces (pure cost)."""
+        self.frame.configure(fg_color=TEAL_TINT if is_wastage else "transparent")
+        if is_wastage:
+            self.pieces.delete(0, "end")
+            self.pieces.configure(state="disabled")
+        else:
+            self.pieces.configure(state="normal")
+
+    def paint(self, result):
+        """Write the computed Wt./Pc, Cost/Pc and Revenue cells."""
+        if self.is_wastage():
+            wtpc = costpc = rev = "—"
+        elif result is not None:
+            wtpc = "N/A" if result.weight_per_piece is None else fmt(result.weight_per_piece)
+            costpc = fmt(result.cost_per_piece, money=True)
+            rev = fmt(result.revenue, money=True)
+        else:
+            wtpc = costpc = rev = "—"
+        self.wtpc.configure(text=wtpc)
+        self.costpc.configure(text=costpc)
+        self.revenue.configure(text=rev)
+
+    def destroy(self):
+        self.frame.destroy()
+
+
+class CostingApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Textile Lot Costing")
-        self.geometry("1024x760")
-        self.minsize(900, 640)
+        self.geometry("1180x940")
+        self.minsize(1040, 720)
 
-        # iid -> Product mapping; tree child order defines product order.
-        self.row_products = {}
-        self._row_counter = 0
-        self._editor = None  # active inline-edit Entry, if any
+        ctk.set_appearance_mode("light")
+        # Base theme is fine; we override accent colours per-widget so only the
+        # primary button + checkboxes carry teal (secondary buttons stay neutral).
+        self.configure(fg_color=BG)
+
+        # Fonts (created after root exists, as CTkFont requires).
+        self.font_title = ctk.CTkFont(size=22, weight="bold")
+        self.font_h2    = ctk.CTkFont(size=16, weight="bold")
+        self.font_body  = ctk.CTkFont(size=14)
+        self.font_label = ctk.CTkFont(size=13)
+        self.font_tile  = ctk.CTkFont(size=19, weight="bold")
+        self.font_sum   = ctk.CTkFont(size=17)
+        self.font_sumb  = ctk.CTkFont(size=17, weight="bold")
+        self.font_profit = ctk.CTkFont(size=26, weight="bold")
+
+        self.rows = []          # list[ProductRow] in display order
+        self.vars = {}          # lot-info StringVars
+
+        # Scrollable page so the whole layout stays reachable on small screens.
+        self.page = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self.page.pack(fill="both", expand=True, padx=18, pady=14)
 
         self._build_toolbar()
-        self._build_lot_panel()
-        self._build_products_panel()
-        self._build_warning_and_totals()
+        self._build_lot_card()
+        self._build_calc_card()
+        self._build_products_card()
+        self._build_warning()
+        self._build_summary_card()
+
+        # Wire lot-info live updates now that all widgets exist.
+        for var in self.vars.values():
+            var.trace_add("write", self.recompute)
 
         self._new_lot(confirm=False)  # start with a clean, dated sheet
 
-    # ------------------------------------------------------------------ layout
+    # ------------------------------------------------------------ card helper
+    def _card(self, title=None, hint=None):
+        card = ctk.CTkFrame(self.page, fg_color=CARD, border_width=1,
+                            border_color=CARD_BORDER, corner_radius=12)
+        card.pack(fill="x", pady=(0, 16))
+        if title:
+            ctk.CTkLabel(card, text=title, font=self.font_h2,
+                         text_color=TEXT).pack(anchor="w", padx=20, pady=(16, 0))
+        if hint:
+            ctk.CTkLabel(card, text=hint, font=self.font_label,
+                         text_color=MUTED).pack(anchor="w", padx=20, pady=(2, 0))
+        return card
+
+    def _button(self, parent, text, command, primary=False):
+        if primary:
+            return ctk.CTkButton(parent, text=text, command=command,
+                                 font=self.font_body, fg_color=TEAL,
+                                 hover_color=TEAL_HOVER, text_color="#ffffff",
+                                 height=38, corner_radius=8)
+        return ctk.CTkButton(parent, text=text, command=command,
+                             font=self.font_body, fg_color=SECONDARY,
+                             hover_color=SECONDARY_H, text_color=TEXT,
+                             height=38, corner_radius=8)
+
+    # ------------------------------------------------------------------ toolbar
     def _build_toolbar(self):
-        bar = ttk.Frame(self, padding=(12, 10))
-        bar.pack(fill="x")
-        for text, cmd in [
-            ("New Lot", self._new_lot),
-            ("Save Lot", self._save_lot),
-            ("Open Lot", self._open_lot),
-            ("Export to Excel", self._export_excel),
-        ]:
-            ttk.Button(bar, text=text, command=cmd).pack(side="left", padx=(0, 8))
+        bar = ctk.CTkFrame(self.page, fg_color="transparent")
+        bar.pack(fill="x", pady=(0, 16))
+        ctk.CTkLabel(bar, text="Textile Lot Costing", font=self.font_title,
+                     text_color=TEXT).pack(side="left")
+        # Primary action on the far right, secondaries to its left.
+        self._button(bar, "Export to Excel", self._export_excel,
+                     primary=True).pack(side="right", padx=(8, 0))
+        for text, cmd in [("Open Lot", self._open_lot),
+                          ("Save Lot", self._save_lot),
+                          ("New Lot", self._new_lot)]:
+            self._button(bar, text, cmd).pack(side="right", padx=(8, 0))
 
-    def _build_lot_panel(self):
-        frame = ttk.LabelFrame(self, text="Lot Information", padding=12)
-        frame.pack(fill="x", padx=12, pady=(0, 10))
+    # --------------------------------------------------------------- lot card
+    def _build_lot_card(self):
+        card = self._card("Lot Information",
+                          "Details of the fabric received from the supplier.")
+        grid = ctk.CTkFrame(card, fg_color="transparent")
+        grid.pack(fill="x", padx=20, pady=(12, 18))
 
-        # --- editable inputs (left) ---
-        self.vars = {}
-        input_fields = [
-            ("reference", "Lot Reference"),
-            ("fabric_type", "Fabric Type"),
-            ("date", "Date"),
-            ("gsm", "GSM"),
-            ("width_in", "Width (inches)"),
-            ("total_kg", "Total KG Received"),
-            ("rate_per_meter", "Rate per Meter"),
-            ("transport_cost", "Transport Cost"),
+        fields = [
+            ("reference", "Lot Reference"), ("fabric_type", "Fabric Type"),
+            ("date", "Date"), ("gsm", "GSM"),
+            ("width_in", "Width (inches)"), ("total_kg", "Total KG Received"),
+            ("rate_per_meter", "Rate per Meter"), ("transport_cost", "Transport Cost"),
         ]
-        inputs = ttk.Frame(frame)
-        inputs.grid(row=0, column=0, sticky="nw", padx=(0, 30))
-        for i, (key, label) in enumerate(input_fields):
-            r, c = divmod(i, 2)
-            cell = ttk.Frame(inputs)
-            cell.grid(row=r, column=c, sticky="w", padx=(0, 24), pady=6)
-            ttk.Label(cell, text=label).pack(anchor="w")
-            var = tk.StringVar()
-            var.trace_add("write", lambda *_: self.recompute())
-            ttk.Entry(cell, textvariable=var, width=22).pack(anchor="w")
+        cols = 4
+        for i in range(cols):
+            grid.grid_columnconfigure(i, weight=1, uniform="lot")
+        for i, (key, label) in enumerate(fields):
+            r, c = divmod(i, cols)
+            cell = ctk.CTkFrame(grid, fg_color="transparent")
+            cell.grid(row=r, column=c, sticky="ew", padx=8, pady=8)
+            ctk.CTkLabel(cell, text=label, font=self.font_label,
+                         text_color=MUTED).pack(anchor="w")
+            var = ctk.StringVar()
             self.vars[key] = var
+            ctk.CTkEntry(cell, textvariable=var, font=self.font_body,
+                         fg_color=CARD, border_color=CARD_BORDER,
+                         height=36).pack(fill="x", pady=(4, 0))
 
-        # --- read-only lot calculations (right) ---
-        calc = ttk.LabelFrame(frame, text="Lot Calculations", padding=10)
-        calc.grid(row=0, column=1, sticky="nw")
+    # -------------------------------------------------------------- calc card
+    def _build_calc_card(self):
+        card = self._card("Lot Calculations",
+                          "Worked out automatically — you can’t type in these.")
+        grid = ctk.CTkFrame(card, fg_color="transparent")
+        grid.pack(fill="x", padx=20, pady=(12, 18))
+
         self.lot_calc_labels = {}
-        calc_fields = [
-            ("meters_per_kg", "Meters per KG"),
-            ("total_meters", "Total Meters"),
-            ("fabric_cost", "Fabric Cost"),
-            ("total_cost", "Total Cost"),
-            ("base_cost_per_kg", "Base Cost per KG"),
-            ("wastage_cost_per_kg", "Wastage Cost per KG"),
-            ("adjusted_cost_per_kg", "Adjusted Cost per KG"),
+        tiles = [
+            ("meters_per_kg", "Meters per KG", False),
+            ("total_meters", "Total Meters", False),
+            ("fabric_cost", "Fabric Cost", True),
+            ("total_cost", "Total Cost", True),
+            ("base_cost_per_kg", "Base Cost per KG", True),
+            ("wastage_cost_per_kg", "Wastage Cost per KG", True),
+            ("adjusted_cost_per_kg", "Adjusted Cost per KG", True),
         ]
-        for i, (key, label) in enumerate(calc_fields):
-            ttk.Label(calc, text=label + ":").grid(row=i, column=0, sticky="w", pady=2)
-            val = ttk.Label(calc, text="—", width=16, anchor="e")
-            val.grid(row=i, column=1, sticky="e", padx=(12, 0), pady=2)
+        cols = 4
+        for i in range(cols):
+            grid.grid_columnconfigure(i, weight=1, uniform="calc")
+        for i, (key, label, _money) in enumerate(tiles):
+            r, c = divmod(i, cols)
+            accent = key == "adjusted_cost_per_kg"
+            tile = ctk.CTkFrame(grid, fg_color=TEAL_TINT if accent else TILE_BG,
+                                corner_radius=8)
+            tile.grid(row=r, column=c, sticky="ew", padx=6, pady=6)
+            ctk.CTkLabel(tile, text=label, font=self.font_label,
+                         text_color=MUTED).pack(anchor="w", padx=14, pady=(12, 0))
+            val = ctk.CTkLabel(tile, text="—", font=self.font_tile,
+                               text_color=TEAL_HOVER if accent else TEXT)
+            val.pack(anchor="w", padx=14, pady=(2, 12))
             self.lot_calc_labels[key] = val
 
-    def _build_products_panel(self):
-        frame = ttk.LabelFrame(self, text="Products", padding=12)
-        frame.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+    # ---------------------------------------------------------- products card
+    def _build_products_card(self):
+        card = self._card("Products",
+                          "Type into Product, Weight and Pieces. Tick one row as wastage.")
+        # Add Row button on the header line.
+        header_bar = ctk.CTkFrame(card, fg_color="transparent")
+        header_bar.pack(fill="x", padx=20, pady=(8, 0))
+        self._button(header_bar, "+ Add Row",
+                     lambda: (self._add_row(Product(name="")), self.recompute())
+                     ).pack(side="right")
 
-        btns = ttk.Frame(frame)
-        btns.pack(fill="x", pady=(0, 8))
-        ttk.Button(btns, text="Add Row", command=self._add_row).pack(side="left")
-        ttk.Button(btns, text="Delete Selected Row",
-                   command=self._delete_row).pack(side="left", padx=(8, 0))
-        ttk.Label(
-            btns,
-            text="Double-click a Product / Weight / Pieces cell to edit. "
-                 "Click the Wastage cell to mark the waste row.",
-            foreground="#666",
-        ).pack(side="left", padx=(16, 0))
+        # Column header row (fixed, above the scroll area) — same widths as rows.
+        head = ctk.CTkFrame(card, fg_color="transparent")
+        head.pack(fill="x", padx=20, pady=(10, 0))
+        headers = [("name", "Product"), ("weight", "Weight (kg)"),
+                   ("pieces", "Pieces"), ("wastage", "Wastage"),
+                   ("wtpc", "Wt./Pc"), ("costpc", "Cost/Pc"),
+                   ("revenue", "Revenue"), ("del", "")]
+        for key, text in headers:
+            anchor = "w" if key == "name" else ("center" if key == "wastage" else "e")
+            ctk.CTkLabel(head, text=text, width=COL[key], anchor=anchor,
+                         font=self.font_label, text_color=MUTED).pack(
+                side="left", padx=4)
 
-        table = ttk.Frame(frame)
-        table.pack(fill="both", expand=True)
+        self.table = ctk.CTkScrollableFrame(card, fg_color="transparent", height=260)
+        self.table.pack(fill="x", padx=16, pady=(4, 16))
 
-        columns = [c[0] for c in _COLUMNS]
-        self.tree = ttk.Treeview(table, columns=columns, show="headings", height=8)
-        for key, heading, width, _editable in _COLUMNS:
-            self.tree.heading(key, text=heading)
-            anchor = "w" if key == "name" else "center"
-            self.tree.column(key, width=width, anchor=anchor, stretch=(key == "name"))
+    # ---------------------------------------------------------- warning label
+    def _build_warning(self):
+        self.warning = ctk.CTkLabel(
+            self.page, text="", font=self.font_sumb, text_color=ORANGE,
+            anchor="w", justify="left", wraplength=1000)
+        # Packed/unpacked by _refresh_warning; sits above the summary card.
 
-        vsb = ttk.Scrollbar(table, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=vsb.set)
-        self.tree.pack(side="left", fill="both", expand=True)
-        vsb.pack(side="right", fill="y")
-
-        # Highlight the wastage row.
-        self.tree.tag_configure("wastage", background="#FCE8D5")
-
-        self.tree.bind("<Double-1>", self._on_double_click)
-        self.tree.bind("<Button-1>", self._on_single_click)
-
-    def _build_warning_and_totals(self):
-        # Reconciliation warning (packed/unpacked as needed).
-        self.warning_var = tk.StringVar(value="")
-        self.warning_label = tk.Label(
-            self, textvariable=self.warning_var, fg=_ORANGE,
-            font=("TkDefaultFont", 11, "bold"), anchor="w", justify="left",
-        )
-        # Not packed yet; _refresh_warning controls visibility.
-
-        totals = ttk.LabelFrame(self, text="Summary", padding=12)
-        totals.pack(fill="x", padx=12, pady=(0, 14))
-        self.totals_frame = totals
+    # ---------------------------------------------------------- summary card
+    def _build_summary_card(self):
+        card = self._card("Summary")
+        self.summary_card = card
+        box = ctk.CTkFrame(card, fg_color="transparent")
+        box.pack(fill="x", padx=20, pady=(12, 16))
+        box.grid_columnconfigure(0, weight=1)
 
         self.total_labels = {}
-        big = ("TkDefaultFont", 12, "bold")
         rows = [
             ("total_weight", "Total Weight Produced (kg)"),
             ("total_pieces", "Total Pieces"),
@@ -185,138 +357,43 @@ class CostingApp(tk.Tk):
             ("total_receipt", "Total Receipt (Revenue)"),
         ]
         for i, (key, label) in enumerate(rows):
-            ttk.Label(totals, text=label + ":", font=big).grid(
-                row=i, column=0, sticky="w", pady=3)
-            val = ttk.Label(totals, text="—", font=big, anchor="e", width=18)
-            val.grid(row=i, column=1, sticky="e", padx=(16, 0), pady=3)
+            ctk.CTkLabel(box, text=label, font=self.font_sum,
+                         text_color=MUTED).grid(row=i, column=0, sticky="w", pady=6)
+            val = ctk.CTkLabel(box, text="—", font=self.font_sumb, text_color=TEXT)
+            val.grid(row=i, column=1, sticky="e", pady=6)
             self.total_labels[key] = val
 
-        # Profit gets its own coloured, larger label.
-        ttk.Label(totals, text="Profit:", font=("TkDefaultFont", 14, "bold")).grid(
-            row=len(rows), column=0, sticky="w", pady=(8, 0))
-        self.profit_label = tk.Label(
-            totals, text="—", font=("TkDefaultFont", 14, "bold"), anchor="e", width=18)
-        self.profit_label.grid(row=len(rows), column=1, sticky="e",
-                               padx=(16, 0), pady=(8, 0))
+        ctk.CTkLabel(box, text="Profit", font=self.font_h2,
+                     text_color=TEXT).grid(row=len(rows), column=0, sticky="w",
+                                           pady=(12, 4))
+        self.profit_label = ctk.CTkLabel(box, text="—", font=self.font_profit,
+                                         text_color=TEXT)
+        self.profit_label.grid(row=len(rows), column=1, sticky="e", pady=(12, 4))
 
     # --------------------------------------------------------------- products
     def _add_row(self, product=None):
-        """Append a product row (blank, or from a given Product)."""
-        product = product or Product(name="", weight_kg=None, pieces=None)
-        iid = f"row{self._row_counter}"
-        self._row_counter += 1
-        self.row_products[iid] = product
-        self.tree.insert("", "end", iid=iid, values=self._row_values(product))
-        self._apply_row_tags(iid)
+        product = product or Product(name="")
+        row = ProductRow(self.table, self, product)
+        row.frame.pack(fill="x")
+        self.rows.append(row)
+
+    def _delete_row(self, row):
+        row.destroy()
+        self.rows.remove(row)
         self.recompute()
 
-    def _delete_row(self):
-        sel = self.tree.selection()
-        if not sel:
-            messagebox.showinfo("Delete Row", "Select a row to delete first.")
-            return
-        for iid in sel:
-            self.tree.delete(iid)
-            self.row_products.pop(iid, None)
+    def _on_wastage(self, row):
+        """Enforce a single wastage row: checking one clears the others."""
+        if row.is_wastage():
+            for other in self.rows:
+                if other is not row and other.is_wastage():
+                    other.wastage_var.set(0)
+                    other._apply_wastage_style(False)
+        row._apply_wastage_style(row.is_wastage())
         self.recompute()
-
-    def _row_values(self, product, result=None):
-        """Build the 7 display cell values for a product row."""
-        wastage = "✓" if product.is_wastage else ""
-        if product.is_wastage:
-            wtpc = costpc = revenue = "—"
-        elif result is not None:
-            wtpc = "N/A" if result.weight_per_piece is None else fmt(result.weight_per_piece)
-            costpc = fmt(result.cost_per_piece, money=True)
-            revenue = fmt(result.revenue, money=True)
-        else:
-            wtpc = costpc = revenue = "—"
-        return [
-            product.name,
-            "" if product.weight_kg in (None, "") else product.weight_kg,
-            "" if product.pieces in (None, "") else product.pieces,
-            wastage,
-            wtpc,
-            costpc,
-            revenue,
-        ]
-
-    def _apply_row_tags(self, iid):
-        product = self.row_products[iid]
-        self.tree.item(iid, tags=("wastage",) if product.is_wastage else ())
 
     def _ordered_products(self):
-        return [self.row_products[iid] for iid in self.tree.get_children()]
-
-    # ------------------------------------------------------- inline editing
-    def _on_single_click(self, event):
-        """Toggle the wastage flag when its cell is clicked."""
-        if self.tree.identify_region(event.x, event.y) != "cell":
-            return
-        col = self.tree.identify_column(event.x)  # like "#4"
-        iid = self.tree.identify_row(event.y)
-        if not iid:
-            return
-        col_index = int(col[1:]) - 1
-        if _COLUMNS[col_index][0] != "wastage":
-            return
-        # Enforce single wastage row: turning one on clears the rest.
-        turning_on = not self.row_products[iid].is_wastage
-        for other_iid, product in self.row_products.items():
-            product.is_wastage = turning_on and other_iid == iid
-            self._apply_row_tags(other_iid)
-        self.recompute()
-
-    def _on_double_click(self, event):
-        """Open an inline Entry over an editable text cell."""
-        if self.tree.identify_region(event.x, event.y) != "cell":
-            return
-        col = self.tree.identify_column(event.x)
-        iid = self.tree.identify_row(event.y)
-        if not iid:
-            return
-        col_index = int(col[1:]) - 1
-        key, _heading, _width, editable = _COLUMNS[col_index]
-        if not editable:
-            return
-
-        x, y, w, h = self.tree.bbox(iid, col)
-        current = self.tree.set(iid, key)
-        self._destroy_editor()
-
-        entry = ttk.Entry(self.tree)
-        entry.place(x=x, y=y, width=w, height=h)
-        entry.insert(0, current)
-        entry.focus_set()
-        entry.select_range(0, "end")
-
-        def commit(_event=None):
-            self._commit_edit(iid, key, entry.get())
-            self._destroy_editor()
-
-        entry.bind("<Return>", commit)
-        entry.bind("<KP_Enter>", commit)
-        entry.bind("<FocusOut>", commit)
-        entry.bind("<Escape>", lambda e: self._destroy_editor())
-        self._editor = entry
-
-    def _commit_edit(self, iid, key, raw):
-        product = self.row_products.get(iid)
-        if product is None:
-            return
-        raw = raw.strip()
-        if key == "name":
-            product.name = raw
-        elif key == "weight":
-            product.weight_kg = raw if raw != "" else None
-        elif key == "pieces":
-            product.pieces = raw if raw != "" else None
-        self.recompute()
-
-    def _destroy_editor(self):
-        if self._editor is not None:
-            self._editor.destroy()
-            self._editor = None
+        return [row.to_product() for row in self.rows]
 
     # ------------------------------------------------------------- recompute
     def _current_lot(self):
@@ -338,74 +415,70 @@ class CostingApp(tk.Tk):
         products = self._ordered_products()
         results = calculations.compute(lot, products)
 
-        # Lot calculation labels.
         money_keys = {"fabric_cost", "total_cost", "base_cost_per_kg",
                       "wastage_cost_per_kg", "adjusted_cost_per_kg"}
         for key, label in self.lot_calc_labels.items():
-            label.config(text=fmt(getattr(results, key), money=key in money_keys))
+            label.configure(text=fmt(getattr(results, key), money=key in money_keys))
 
-        # Per-row computed columns.
-        for iid, pr in zip(self.tree.get_children(), results.product_results):
-            product = self.row_products[iid]
-            self.tree.item(iid, values=self._row_values(product, pr))
-            self._apply_row_tags(iid)
+        for row, pr in zip(self.rows, results.product_results):
+            row.paint(pr)
 
-        # Totals.
-        self.total_labels["total_weight"].config(text=fmt(results.total_weight_produced))
-        self.total_labels["total_pieces"].config(text=fmt(results.total_pieces, decimals=0))
-        self.total_labels["total_payment"].config(text=fmt(results.total_payment, money=True))
-        self.total_labels["total_receipt"].config(text=fmt(results.total_receipt, money=True))
+        self.total_labels["total_weight"].configure(
+            text=fmt(results.total_weight_produced))
+        self.total_labels["total_pieces"].configure(
+            text=fmt(results.total_pieces, decimals=0))
+        self.total_labels["total_payment"].configure(
+            text=fmt(results.total_payment, money=True))
+        self.total_labels["total_receipt"].configure(
+            text=fmt(results.total_receipt, money=True))
 
         if results.profit is None:
-            self.profit_label.config(text="—", fg="black")
+            self.profit_label.configure(text="—", text_color=TEXT)
         else:
-            self.profit_label.config(
+            self.profit_label.configure(
                 text=fmt(results.profit, money=True),
-                fg=_GREEN if results.profit >= 0 else _RED,
-            )
+                text_color=GREEN if results.profit >= 0 else RED)
 
         self._refresh_warning(results)
 
     def _refresh_warning(self, results):
         if results.recon_mismatch:
-            self.warning_var.set(results.recon_message)
-            if not self.warning_label.winfo_ismapped():
-                # Show it right above the Summary frame.
-                self.warning_label.pack(fill="x", padx=14, pady=(0, 6),
-                                        before=self.totals_frame)
+            self.warning.configure(text=results.recon_message)
+            if not self.warning.winfo_ismapped():
+                self.warning.pack(fill="x", padx=6, pady=(0, 10),
+                                  before=self.summary_card)
         else:
-            self.warning_var.set("")
-            if self.warning_label.winfo_ismapped():
-                self.warning_label.pack_forget()
+            self.warning.configure(text="")
+            if self.warning.winfo_ismapped():
+                self.warning.pack_forget()
 
     # -------------------------------------------------------------- toolbar ops
+    def _clear_rows(self):
+        for row in self.rows:
+            row.destroy()
+        self.rows.clear()
+
     def _new_lot(self, confirm=True):
         if confirm and not messagebox.askyesno(
                 "New Lot", "Clear all fields and start a new lot?"):
             return
-        self._destroy_editor()
         for key, var in self.vars.items():
             var.set(date.today().isoformat() if key == "date" else "")
-        for iid in list(self.tree.get_children()):
-            self.tree.delete(iid)
-        self.row_products.clear()
-        # Seed with a few blank rows incl. a wastage row for convenience.
-        self._add_row(Product(name="", weight_kg=None, pieces=None))
-        self._add_row(Product(name="", weight_kg=None, pieces=None))
-        self._add_row(Product(name="Wastage", weight_kg=None, pieces=None, is_wastage=True))
+        self._clear_rows()
+        # Seed with two blank rows plus a wastage row for convenience.
+        self._add_row(Product(name=""))
+        self._add_row(Product(name=""))
+        self._add_row(Product(name="Wastage", is_wastage=True))
         self.recompute()
 
     def _load_into_ui(self, lot, products):
-        self._destroy_editor()
         self.vars["reference"].set(lot.reference or "")
         self.vars["fabric_type"].set(lot.fabric_type or "")
         self.vars["date"].set(lot.date or "")
         for key in ("gsm", "width_in", "total_kg", "rate_per_meter", "transport_cost"):
             val = getattr(lot, key)
             self.vars[key].set("" if val is None else str(val))
-        for iid in list(self.tree.get_children()):
-            self.tree.delete(iid)
-        self.row_products.clear()
+        self._clear_rows()
         for p in products:
             self._add_row(p)
         self.recompute()
@@ -414,8 +487,7 @@ class CostingApp(tk.Tk):
         lot = self._current_lot()
         products = self._ordered_products()
         path = filedialog.asksaveasfilename(
-            title="Save Lot",
-            defaultextension=".json",
+            title="Save Lot", defaultextension=".json",
             initialdir=str(storage.lots_dir()),
             initialfile=storage.default_filename(lot, "json"),
             filetypes=[("Lot files", "*.json")],
@@ -430,8 +502,7 @@ class CostingApp(tk.Tk):
 
     def _open_lot(self):
         path = filedialog.askopenfilename(
-            title="Open Lot",
-            initialdir=str(storage.lots_dir()),
+            title="Open Lot", initialdir=str(storage.lots_dir()),
             filetypes=[("Lot files", "*.json"), ("All files", "*.*")],
         )
         if not path:
@@ -447,8 +518,7 @@ class CostingApp(tk.Tk):
         products = self._ordered_products()
         results = calculations.compute(lot, products)
         path = filedialog.asksaveasfilename(
-            title="Export to Excel",
-            defaultextension=".xlsx",
+            title="Export to Excel", defaultextension=".xlsx",
             initialfile=storage.default_filename(lot, "xlsx"),
             filetypes=[("Excel files", "*.xlsx")],
         )
