@@ -23,6 +23,7 @@ by older builds.
 """
 
 from datetime import date, datetime
+from pathlib import Path
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
@@ -76,6 +77,60 @@ def fmt(value, money=False, decimals=2):
 def kgfmt(value):
     """Compact weight for sentences: 500.0 -> '500', 18.5 -> '18.5'."""
     return f"{value:g}"
+
+
+def reports_dir() -> Path:
+    """Where exported Excel reports go — somewhere the operator can find them.
+
+    Saved-lot JSON files live in `lots/` next to the app (working data the user
+    never opens by hand); reports go to a visible folder in Documents instead.
+    """
+    docs = Path.home() / "Documents"
+    base = docs if docs.exists() else Path.home()
+    d = base / "Fabric Costing Reports"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _settings_path() -> Path:
+    return storage.app_dir() / "settings.json"
+
+
+def load_settings() -> dict:
+    """Tiny persisted preferences (e.g. last-used export folder)."""
+    try:
+        import json
+        with open(_settings_path(), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001 — missing/corrupt file: start fresh
+        return {}
+
+
+def save_settings(settings: dict) -> None:
+    try:
+        import json
+        with open(_settings_path(), "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+    except Exception:  # noqa: BLE001 — non-critical; never block the export
+        pass
+
+
+def report_filename(lot) -> str:
+    """Human-friendly report name, e.g. 'Lot CVC-3 - CVC - 2026-07-09.xlsx'.
+
+    Lot reference first so every export of the same lot sorts together in the
+    folder; ISO date so repeated exports line up chronologically.
+    """
+    parts = ["Lot " + ((lot.reference or "").strip() or "untitled")]
+    if (lot.fabric_type or "").strip():
+        parts.append(lot.fabric_type.strip())
+    if (lot.date or "").strip():
+        parts.append(lot.date.strip())
+    stem = " - ".join(parts)
+    for bad in '<>:"/\\|?*':
+        stem = stem.replace(bad, "-")
+    return f"{stem}.xlsx"
 
 
 def configure_table_grid(frame):
@@ -242,6 +297,12 @@ class CostingApp(ctk.CTk):
         self.font_small   = ctk.CTkFont(size=13)                  # captions, wt/pc
         self.font_tiny    = ctk.CTkFont(size=11)                  # helper text
 
+        # Where quick-save writes. None until the first save/open; Save As and
+        # Open rebind it, so Save always updates "the file this lot lives in".
+        self._current_save_path = None
+        # Persisted preferences (last-used export folder survives restarts).
+        self._settings = load_settings()
+
         self.rows = []
         self.vars = {k: ctk.StringVar() for k in (
             "reference", "fabric_type", "date", "gsm", "width_in", "total_kg",
@@ -259,11 +320,14 @@ class CostingApp(ctk.CTk):
 
     # -------------------------------------------------------------- chrome ---
     def _set_initial_geometry(self):
-        """Open near-screen-sized instead of a fixed 1200×900.
+        """Open near-screen-sized and centered instead of a fixed 1200×900.
 
         Targets the full screen minus room for the OS title bar and taskbar,
-        clamped to sane bounds. CTk multiplies geometry() by its window-scaling
-        factor, so the physical target is divided back to logical units first.
+        clamped to sane bounds, and centers the window (biased slightly upward)
+        so the bottom edge clears the Windows taskbar. CTk multiplies the size
+        part of geometry() by its window-scaling factor — but passes +x+y
+        offsets through unscaled — so size is converted to logical units while
+        the position stays in physical pixels.
         """
         try:
             scaling = ctk.ScalingTracker.get_window_scaling(self)
@@ -271,8 +335,12 @@ class CostingApp(ctk.CTk):
             scaling = 1.0
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
         phys_w = max(min(sw - 140, 1880), 1000)
-        phys_h = max(min(sh - 80, 1160), 760)
-        geo = f"{int(phys_w / scaling)}x{int(phys_h / scaling)}"
+        phys_h = max(min(sh - 100, 1160), 760)
+        # Center horizontally; center vertically within the space above the
+        # taskbar (~60px allowance for taskbar + window title bar).
+        x = max(0, (sw - phys_w) // 2)
+        y = max(0, (sh - 60 - phys_h) // 2)
+        geo = f"{int(phys_w / scaling)}x{int(phys_h / scaling)}+{x}+{y}"
         self.geometry(geo)
         # CTk's set_*_scaling() re-applies its stored window size asynchronously
         # and can clobber a geometry set during startup — re-assert once settled.
@@ -301,7 +369,8 @@ class CostingApp(ctk.CTk):
 
         btn("Export to Excel", self._export_excel, primary=True).pack(
             side="right", padx=(8, 18))
-        for text, cmd in [("Save", self._save_lot), ("Open", self._open_lot),
+        for text, cmd in [("Save As", self._save_lot_as),
+                          ("Save", self._save_lot), ("Open", self._open_lot),
                           ("New Lot", self._new_lot)]:
             btn(text, cmd).pack(side="right", padx=(8, 0))
         ctk.CTkFrame(self, fg_color=CARD_BORDER, height=1,
@@ -376,7 +445,7 @@ class CostingApp(ctk.CTk):
                      anchor="w").pack(fill="x", pady=(0, 10))
 
         # --- FABRIC RECEIVED -------------------------------------------------
-        ctk.CTkLabel(inner, text="F A B R I C   R E C E I V E D",
+        ctk.CTkLabel(inner, text="F A B R I C   I N F O R M A T I O N",
                      font=self.font_section, text_color=TEAL,
                      anchor="w").pack(fill="x", pady=(0, 6))
         self._field(inner, "Fabric type", "fabric_type").pack(fill="x", pady=(0, 12))
@@ -404,7 +473,7 @@ class CostingApp(ctk.CTk):
         self._divider(inner)
 
         # --- COST FROM SUPPLIER ----------------------------------------------
-        ctk.CTkLabel(inner, text="C O S T   F R O M   S U P P L I E R",
+        ctk.CTkLabel(inner, text="C O S T   I N F O R M A T I O N",
                      font=self.font_section, text_color=TEAL,
                      anchor="w").pack(fill="x", pady=(0, 6))
         self._field(inner, "Rate per meter", "rate_per_meter",
@@ -591,10 +660,10 @@ class CostingApp(ctk.CTk):
             val.pack(side="right")
             self.summary[key] = val
 
-        self.rupee_label = ctk.CTkLabel(inner2,
-                                        text="✓  Every rupee is spread onto a piece.",
-                                        font=self.font_field, text_color=GREEN,
-                                        anchor="w")
+        self.rupee_label = ctk.CTkLabel(
+            inner2, text="✓  Wastage cost is included in each piece's cost.",
+            font=self.font_field, text_color=GREEN, anchor="w",
+            wraplength=250, justify="left")
         self.rupee_label.pack(fill="x", pady=(6, 0))
 
     # ------------------------------------------------------------- products ---
@@ -673,7 +742,7 @@ class CostingApp(ctk.CTk):
                 text=f"spread across {fmt(results.total_pieces, decimals=0)} "
                      f"pieces from {kgfmt(total_kg)} kg.")
             self.rupee_label.configure(
-                text="✓  Every rupee is spread onto a piece.")
+                text="✓  Wastage cost is included in each piece's cost.")
         else:
             self.spread_label.configure(text="")
             self.rupee_label.configure(text="")
@@ -719,6 +788,7 @@ class CostingApp(ctk.CTk):
         if confirm and not messagebox.askyesno(
                 "New Lot", "Clear all fields and start a new lot?"):
             return
+        self._current_save_path = None  # a fresh lot isn't bound to a file yet
         for key, var in self.vars.items():
             var.set(date.today().isoformat() if key == "date" else "")
         self._clear_rows()
@@ -760,19 +830,41 @@ class CostingApp(ctk.CTk):
         self.recompute()
 
     def _save_lot(self):
+        """Quick save — no dialog.
+
+        Writes to the lot's bound file (set by a previous Save, Save As, or
+        Open); a never-saved lot defaults to lots/{reference}_{date}.json.
+        """
         lot = self._current_lot()
         products = self._products_for_compute()  # incl. synthesised wastage row
+        path = self._current_save_path or (
+            storage.lots_dir() / storage.default_filename(lot, "json"))
+        self._write_lot(lot, products, path)
+
+    def _save_lot_as(self):
+        """Pick a filename/destination; quick saves then update that file."""
+        lot = self._current_lot()
+        products = self._products_for_compute()
+        if self._current_save_path:
+            initialdir = str(self._current_save_path.parent)
+            initialfile = self._current_save_path.name
+        else:
+            initialdir = str(storage.lots_dir())
+            initialfile = storage.default_filename(lot, "json")
         path = filedialog.asksaveasfilename(
-            title="Save Lot", defaultextension=".json",
-            initialdir=str(storage.lots_dir()),
-            initialfile=storage.default_filename(lot, "json"),
+            title="Save Lot As", defaultextension=".json",
+            initialdir=initialdir, initialfile=initialfile,
             filetypes=[("Lot files", "*.json")],
         )
         if not path:
             return
+        self._write_lot(lot, products, Path(path))
+
+    def _write_lot(self, lot, products, path):
         try:
-            storage.save_lot(lot, products, path)
-            messagebox.showinfo("Save Lot", "Lot saved successfully.")
+            storage.save_lot(lot, products, str(path))
+            self._current_save_path = Path(path)
+            messagebox.showinfo("Save Lot", f"Saved {Path(path).name}")
         except Exception as exc:  # noqa: BLE001 — surface any IO error friendly
             messagebox.showerror("Save Lot", f"Could not save the lot:\n{exc}")
 
@@ -786,6 +878,8 @@ class CostingApp(ctk.CTk):
         try:
             lot, products = storage.load_lot(path)
             self._load_into_ui(lot, products)
+            # Quick saves now update the file that was opened.
+            self._current_save_path = Path(path)
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Open Lot", f"Could not open the lot:\n{exc}")
 
@@ -793,13 +887,24 @@ class CostingApp(ctk.CTk):
         lot = self._current_lot()
         products = self._products_for_compute()  # incl. synthesised wastage row
         results = calculations.compute(lot, products)
+        # Open in the folder the user last exported to; fall back to the
+        # default reports folder if none is remembered (or it was deleted).
+        remembered = self._settings.get("export_dir")
+        if remembered and Path(remembered).is_dir():
+            initialdir = remembered
+        else:
+            initialdir = str(reports_dir())
         path = filedialog.asksaveasfilename(
             title="Export to Excel", defaultextension=".xlsx",
-            initialfile=storage.default_filename(lot, "xlsx"),
+            initialdir=initialdir,
+            initialfile=report_filename(lot),
             filetypes=[("Excel files", "*.xlsx")],
         )
         if not path:
             return
+        # Remember wherever the user actually saved for next time.
+        self._settings["export_dir"] = str(Path(path).parent)
+        save_settings(self._settings)
         try:
             excel_export.export(results, lot, path)
             messagebox.showinfo("Export to Excel",
