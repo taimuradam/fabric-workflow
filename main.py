@@ -92,25 +92,61 @@ def reports_dir() -> Path:
     return d
 
 
-def _settings_path() -> Path:
-    return storage.app_dir() / "settings.json"
+# --------------------------------------------------------- app data folder ---
+# NOTHING is written next to the .exe. Everything lives in one user-chosen
+# "Fabric Lot Files" folder: settings.json plus a "Saved Lots" subfolder for
+# the lot JSONs. The only thing outside it is a one-line locator in the OS
+# per-user config area (%APPDATA% on Windows) that records where that folder
+# is — without it the app couldn't find its own settings at launch.
+
+def _locator_path() -> Path:
+    import os
+    if os.name == "nt":
+        base = Path(os.environ.get("APPDATA", str(Path.home())))
+    else:
+        base = Path.home() / ".config"
+    d = base / "Fabric Costing"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / "location.txt"
 
 
-def load_settings() -> dict:
-    """Tiny persisted preferences (e.g. last-used export folder)."""
+def read_locator():
+    """The recorded Fabric Lot Files folder, or None if unset/deleted."""
+    try:
+        text = _locator_path().read_text(encoding="utf-8").strip()
+        if text and Path(text).is_dir():
+            return Path(text)
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def write_locator(data_dir: Path) -> None:
+    try:
+        _locator_path().write_text(str(data_dir), encoding="utf-8")
+    except Exception:  # noqa: BLE001 — non-critical; app still works this run
+        pass
+
+
+def load_settings(data_dir) -> dict:
+    """Preferences from <Fabric Lot Files>/settings.json ({} if unavailable)."""
+    if not data_dir:
+        return {}
     try:
         import json
-        with open(_settings_path(), "r", encoding="utf-8") as f:
+        with open(Path(data_dir) / "settings.json", "r", encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except Exception:  # noqa: BLE001 — missing/corrupt file: start fresh
         return {}
 
 
-def save_settings(settings: dict) -> None:
+def save_settings(data_dir, settings: dict) -> None:
+    if not data_dir:
+        return
     try:
         import json
-        with open(_settings_path(), "w", encoding="utf-8") as f:
+        with open(Path(data_dir) / "settings.json", "w", encoding="utf-8") as f:
             json.dump(settings, f, indent=2)
     except Exception:  # noqa: BLE001 — non-critical; never block the export
         pass
@@ -300,8 +336,10 @@ class CostingApp(ctk.CTk):
         # Where quick-save writes. None until the first save/open; Save As and
         # Open rebind it, so Save always updates "the file this lot lives in".
         self._current_save_path = None
-        # Persisted preferences (last-used export folder survives restarts).
-        self._settings = load_settings()
+        # The Fabric Lot Files folder (settings + Saved Lots). Found via the
+        # per-user locator, or adopted from an older build's layout.
+        self._data_dir = read_locator() or self._adopt_legacy_layout()
+        self._settings = load_settings(self._data_dir)
 
         self.rows = []
         self.vars = {k: ctk.StringVar() for k in (
@@ -311,10 +349,10 @@ class CostingApp(ctk.CTk):
         self._build_toolbar()
         self._build_body()
 
-        # First launch (or the configured folder was deleted): ask where saved
-        # lots should live, once the window is up so the dialog has a parent.
-        if not self._stored_lots_dir():
-            self.after(600, self._ensure_lots_dir)
+        # First launch (or the configured folder was deleted): ask where the
+        # app's files should live, once the window is up to parent the dialog.
+        if self._data_dir is None:
+            self.after(600, self._ensure_data_dir)
 
         for var in self.vars.values():
             var.trace_add("write", self.recompute)
@@ -834,34 +872,55 @@ class CostingApp(ctk.CTk):
             self._add_row(Product(name=""))
         self.recompute()
 
-    # ---------------------------------------------------------- lots folder ---
-    def _stored_lots_dir(self):
-        """The configured saved-lots folder, or None if unset or deleted."""
-        stored = self._settings.get("lots_dir")
-        if stored and Path(stored).is_dir():
-            return Path(stored)
-        return None
+    # ------------------------------------------------------ app data folder ---
+    def _adopt_legacy_layout(self):
+        """Adopt the folder a previous build configured, without re-asking.
 
-    def _ensure_lots_dir(self) -> Path:
-        """Return the saved-lots folder, asking the user to place it on first use.
-
-        A "Fabric Lot Files" folder is created inside the chosen location and
-        persisted in settings.json. Cancelling the picker falls back to
-        Documents so saving always works. Lots saved by older builds (in the
-        lots/ folder next to the app) are migrated over.
+        Older builds kept settings.json next to the exe with a "lots_dir" key
+        pointing at the Fabric Lot Files folder. If that's present and valid,
+        take it over: write the locator, move its settings into the folder,
+        and tidy stray files into the new structure.
         """
-        existing = self._stored_lots_dir()
-        if existing:
-            return existing
+        legacy = storage.app_dir() / "settings.json"
+        try:
+            import json
+            with open(legacy, "r", encoding="utf-8") as f:
+                old = json.load(f)
+            d = Path(old.get("lots_dir", ""))
+            if not d.is_dir():
+                return None
+            write_locator(d)
+            merged = load_settings(d)
+            for key, value in old.items():
+                merged.setdefault(key, value)
+            merged.pop("lots_dir", None)  # the locator owns this now
+            save_settings(d, merged)
+            legacy.unlink()
+            self._organize_data_dir(d)
+            return d
+        except Exception:  # noqa: BLE001 — no/invalid legacy file
+            return None
+
+    def _ensure_data_dir(self) -> Path:
+        """Return the Fabric Lot Files folder, asking where to put it on first use.
+
+        The chosen location gets a "Fabric Lot Files" folder holding
+        settings.json and a "Saved Lots" subfolder; its path is recorded in the
+        per-user locator. Cancelling the picker falls back to Documents so the
+        app always has somewhere to write. Nothing is stored next to the exe.
+        """
+        if self._data_dir and self._data_dir.is_dir():
+            return self._data_dir
         docs = Path.home() / "Documents"
         default_base = docs if docs.exists() else Path.home()
         messagebox.showinfo(
-            "Saved lots folder",
-            "Choose where the app should keep your saved lot files.\n\n"
+            "App files folder",
+            "Choose where the app should keep its files (saved lots and "
+            "settings).\n\n"
             'A folder called "Fabric Lot Files" will be created there.\n'
             "(If you press Cancel, it will be created in Documents.)")
         picked = filedialog.askdirectory(
-            title="Choose where to keep saved lots",
+            title="Choose where to keep the app's files",
             initialdir=str(default_base))
         base = Path(picked) if picked else default_base
         # Don't nest a second level if the user selected the folder itself.
@@ -871,21 +930,44 @@ class CostingApp(ctk.CTk):
         except Exception:  # noqa: BLE001 — unwritable pick: fall back safely
             d = default_base / "Fabric Lot Files"
             d.mkdir(parents=True, exist_ok=True)
-        self._settings["lots_dir"] = str(d)
-        save_settings(self._settings)
-        self._migrate_old_lots(d)
+        self._data_dir = d
+        write_locator(d)
+        save_settings(d, self._settings)
+        self._organize_data_dir(d)
         return d
 
-    def _migrate_old_lots(self, dest: Path):
-        """Move lots saved by older builds (lots/ next to the app) into dest."""
+    def _saved_lots_dir(self) -> Path:
+        """The Saved Lots subfolder inside the Fabric Lot Files folder."""
+        d = self._ensure_data_dir() / "Saved Lots"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _organize_data_dir(self, data_dir: Path):
+        """Best-effort migration of older layouts into the folder structure.
+
+        Moves lot JSONs from the old lots/ folder next to the exe, and any lot
+        JSONs sitting in the Fabric Lot Files root (the previous build saved
+        them there), into the Saved Lots subfolder.
+        """
         import shutil
-        old = storage.app_dir() / "lots"
+        saved = data_dir / "Saved Lots"
         try:
-            if old.is_dir() and old.resolve() != dest.resolve():
-                for f in old.glob("*.json"):
-                    if not (dest / f.name).exists():
-                        shutil.move(str(f), str(dest / f.name))
-        except Exception:  # noqa: BLE001 — best-effort; old files stay put
+            saved.mkdir(parents=True, exist_ok=True)
+        except Exception:  # noqa: BLE001
+            return
+        old_lots = storage.app_dir() / "lots"
+        try:
+            if old_lots.is_dir() and old_lots.resolve() != saved.resolve():
+                for f in old_lots.glob("*.json"):
+                    if not (saved / f.name).exists():
+                        shutil.move(str(f), str(saved / f.name))
+        except Exception:  # noqa: BLE001 — old files stay put
+            pass
+        try:
+            for f in data_dir.glob("*.json"):
+                if f.name != "settings.json" and not (saved / f.name).exists():
+                    shutil.move(str(f), str(saved / f.name))
+        except Exception:  # noqa: BLE001
             pass
 
     def _save_lot(self):
@@ -898,7 +980,7 @@ class CostingApp(ctk.CTk):
         lot = self._current_lot()
         products = self._products_for_compute()  # incl. synthesised wastage row
         path = self._current_save_path or (
-            self._ensure_lots_dir() / storage.default_filename(lot, "json"))
+            self._saved_lots_dir() / storage.default_filename(lot, "json"))
         self._write_lot(lot, products, path)
 
     def _save_lot_as(self):
@@ -909,7 +991,7 @@ class CostingApp(ctk.CTk):
             initialdir = str(self._current_save_path.parent)
             initialfile = self._current_save_path.name
         else:
-            initialdir = str(self._ensure_lots_dir())
+            initialdir = str(self._saved_lots_dir())
             initialfile = storage.default_filename(lot, "json")
         path = filedialog.asksaveasfilename(
             title="Save Lot As", defaultextension=".json",
@@ -930,7 +1012,7 @@ class CostingApp(ctk.CTk):
 
     def _open_lot(self):
         path = filedialog.askopenfilename(
-            title="Open Lot", initialdir=str(self._ensure_lots_dir()),
+            title="Open Lot", initialdir=str(self._saved_lots_dir()),
             filetypes=[("Lot files", "*.json"), ("All files", "*.*")],
         )
         if not path:
@@ -964,7 +1046,7 @@ class CostingApp(ctk.CTk):
             return
         # Remember wherever the user actually saved for next time.
         self._settings["export_dir"] = str(Path(path).parent)
-        save_settings(self._settings)
+        save_settings(self._ensure_data_dir(), self._settings)
         try:
             excel_export.export(results, lot, path)
             messagebox.showinfo("Export to Excel",
