@@ -273,6 +273,10 @@ class CostingApp(ctk.CTk):
         self.font_small   = ctk.CTkFont(size=13)                  # captions, wt/pc
         self.font_tiny    = ctk.CTkFont(size=11)                  # helper text
 
+        # Where quick-save writes. None until the first save/open; Save As and
+        # Open rebind it, so Save always updates "the file this lot lives in".
+        self._current_save_path = None
+
         self.rows = []
         self.vars = {k: ctk.StringVar() for k in (
             "reference", "fabric_type", "date", "gsm", "width_in", "total_kg",
@@ -290,11 +294,14 @@ class CostingApp(ctk.CTk):
 
     # -------------------------------------------------------------- chrome ---
     def _set_initial_geometry(self):
-        """Open near-screen-sized instead of a fixed 1200×900.
+        """Open near-screen-sized and centered instead of a fixed 1200×900.
 
         Targets the full screen minus room for the OS title bar and taskbar,
-        clamped to sane bounds. CTk multiplies geometry() by its window-scaling
-        factor, so the physical target is divided back to logical units first.
+        clamped to sane bounds, and centers the window (biased slightly upward)
+        so the bottom edge clears the Windows taskbar. CTk multiplies the size
+        part of geometry() by its window-scaling factor — but passes +x+y
+        offsets through unscaled — so size is converted to logical units while
+        the position stays in physical pixels.
         """
         try:
             scaling = ctk.ScalingTracker.get_window_scaling(self)
@@ -302,8 +309,12 @@ class CostingApp(ctk.CTk):
             scaling = 1.0
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
         phys_w = max(min(sw - 140, 1880), 1000)
-        phys_h = max(min(sh - 80, 1160), 760)
-        geo = f"{int(phys_w / scaling)}x{int(phys_h / scaling)}"
+        phys_h = max(min(sh - 100, 1160), 760)
+        # Center horizontally; center vertically within the space above the
+        # taskbar (~60px allowance for taskbar + window title bar).
+        x = max(0, (sw - phys_w) // 2)
+        y = max(0, (sh - 60 - phys_h) // 2)
+        geo = f"{int(phys_w / scaling)}x{int(phys_h / scaling)}+{x}+{y}"
         self.geometry(geo)
         # CTk's set_*_scaling() re-applies its stored window size asynchronously
         # and can clobber a geometry set during startup — re-assert once settled.
@@ -332,7 +343,8 @@ class CostingApp(ctk.CTk):
 
         btn("Export to Excel", self._export_excel, primary=True).pack(
             side="right", padx=(8, 18))
-        for text, cmd in [("Save", self._save_lot), ("Open", self._open_lot),
+        for text, cmd in [("Save As", self._save_lot_as),
+                          ("Save", self._save_lot), ("Open", self._open_lot),
                           ("New Lot", self._new_lot)]:
             btn(text, cmd).pack(side="right", padx=(8, 0))
         ctk.CTkFrame(self, fg_color=CARD_BORDER, height=1,
@@ -750,6 +762,7 @@ class CostingApp(ctk.CTk):
         if confirm and not messagebox.askyesno(
                 "New Lot", "Clear all fields and start a new lot?"):
             return
+        self._current_save_path = None  # a fresh lot isn't bound to a file yet
         for key, var in self.vars.items():
             var.set(date.today().isoformat() if key == "date" else "")
         self._clear_rows()
@@ -791,19 +804,41 @@ class CostingApp(ctk.CTk):
         self.recompute()
 
     def _save_lot(self):
-        """Save silently to the lots folder — no dialog.
+        """Quick save — no dialog.
 
-        The JSON files are working data the operator never opens by hand, so
-        there is nothing for him to choose; the filename comes from the lot
-        reference + date, and re-saving the same lot updates it in place.
+        Writes to the lot's bound file (set by a previous Save, Save As, or
+        Open); a never-saved lot defaults to lots/{reference}_{date}.json.
         """
         lot = self._current_lot()
         products = self._products_for_compute()  # incl. synthesised wastage row
-        path = storage.lots_dir() / storage.default_filename(lot, "json")
+        path = self._current_save_path or (
+            storage.lots_dir() / storage.default_filename(lot, "json"))
+        self._write_lot(lot, products, path)
+
+    def _save_lot_as(self):
+        """Pick a filename/destination; quick saves then update that file."""
+        lot = self._current_lot()
+        products = self._products_for_compute()
+        if self._current_save_path:
+            initialdir = str(self._current_save_path.parent)
+            initialfile = self._current_save_path.name
+        else:
+            initialdir = str(storage.lots_dir())
+            initialfile = storage.default_filename(lot, "json")
+        path = filedialog.asksaveasfilename(
+            title="Save Lot As", defaultextension=".json",
+            initialdir=initialdir, initialfile=initialfile,
+            filetypes=[("Lot files", "*.json")],
+        )
+        if not path:
+            return
+        self._write_lot(lot, products, Path(path))
+
+    def _write_lot(self, lot, products, path):
         try:
             storage.save_lot(lot, products, str(path))
-            messagebox.showinfo(
-                "Save Lot", "Lot saved. Use Open to load it again later.")
+            self._current_save_path = Path(path)
+            messagebox.showinfo("Save Lot", f"Saved {Path(path).name}")
         except Exception as exc:  # noqa: BLE001 — surface any IO error friendly
             messagebox.showerror("Save Lot", f"Could not save the lot:\n{exc}")
 
@@ -817,6 +852,8 @@ class CostingApp(ctk.CTk):
         try:
             lot, products = storage.load_lot(path)
             self._load_into_ui(lot, products)
+            # Quick saves now update the file that was opened.
+            self._current_save_path = Path(path)
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Open Lot", f"Could not open the lot:\n{exc}")
 
