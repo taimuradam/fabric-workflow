@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual environment
+venv/
+.venv/
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
+
+# Saved lots and exported files (local data, not source)
+lots/
+*.xlsx
+
+# OS / editor cruft
+.DS_Store
+.idea/
+.vscode/
