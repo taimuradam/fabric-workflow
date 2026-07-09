@@ -23,6 +23,7 @@ by older builds.
 """
 
 from datetime import date, datetime
+from pathlib import Path
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
@@ -76,6 +77,36 @@ def fmt(value, money=False, decimals=2):
 def kgfmt(value):
     """Compact weight for sentences: 500.0 -> '500', 18.5 -> '18.5'."""
     return f"{value:g}"
+
+
+def reports_dir() -> Path:
+    """Where exported Excel reports go — somewhere the operator can find them.
+
+    Saved-lot JSON files live in `lots/` next to the app (working data the user
+    never opens by hand); reports go to a visible folder in Documents instead.
+    """
+    docs = Path.home() / "Documents"
+    base = docs if docs.exists() else Path.home()
+    d = base / "Fabric Costing Reports"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def report_filename(lot) -> str:
+    """Human-friendly report name, e.g. 'Lot CVC-3 - CVC - 2026-07-09.xlsx'.
+
+    Lot reference first so every export of the same lot sorts together in the
+    folder; ISO date so repeated exports line up chronologically.
+    """
+    parts = ["Lot " + ((lot.reference or "").strip() or "untitled")]
+    if (lot.fabric_type or "").strip():
+        parts.append(lot.fabric_type.strip())
+    if (lot.date or "").strip():
+        parts.append(lot.date.strip())
+    stem = " - ".join(parts)
+    for bad in '<>:"/\\|?*':
+        stem = stem.replace(bad, "-")
+    return f"{stem}.xlsx"
 
 
 def configure_table_grid(frame):
@@ -376,7 +407,7 @@ class CostingApp(ctk.CTk):
                      anchor="w").pack(fill="x", pady=(0, 10))
 
         # --- FABRIC RECEIVED -------------------------------------------------
-        ctk.CTkLabel(inner, text="F A B R I C   R E C E I V E D",
+        ctk.CTkLabel(inner, text="F A B R I C   I N F O R M A T I O N",
                      font=self.font_section, text_color=TEAL,
                      anchor="w").pack(fill="x", pady=(0, 6))
         self._field(inner, "Fabric type", "fabric_type").pack(fill="x", pady=(0, 12))
@@ -404,7 +435,7 @@ class CostingApp(ctk.CTk):
         self._divider(inner)
 
         # --- COST FROM SUPPLIER ----------------------------------------------
-        ctk.CTkLabel(inner, text="C O S T   F R O M   S U P P L I E R",
+        ctk.CTkLabel(inner, text="C O S T   I N F O R M A T I O N",
                      font=self.font_section, text_color=TEAL,
                      anchor="w").pack(fill="x", pady=(0, 6))
         self._field(inner, "Rate per meter", "rate_per_meter",
@@ -591,10 +622,10 @@ class CostingApp(ctk.CTk):
             val.pack(side="right")
             self.summary[key] = val
 
-        self.rupee_label = ctk.CTkLabel(inner2,
-                                        text="✓  Every rupee is spread onto a piece.",
-                                        font=self.font_field, text_color=GREEN,
-                                        anchor="w")
+        self.rupee_label = ctk.CTkLabel(
+            inner2, text="✓  Wastage cost is included in each piece's cost.",
+            font=self.font_field, text_color=GREEN, anchor="w",
+            wraplength=250, justify="left")
         self.rupee_label.pack(fill="x", pady=(6, 0))
 
     # ------------------------------------------------------------- products ---
@@ -673,7 +704,7 @@ class CostingApp(ctk.CTk):
                 text=f"spread across {fmt(results.total_pieces, decimals=0)} "
                      f"pieces from {kgfmt(total_kg)} kg.")
             self.rupee_label.configure(
-                text="✓  Every rupee is spread onto a piece.")
+                text="✓  Wastage cost is included in each piece's cost.")
         else:
             self.spread_label.configure(text="")
             self.rupee_label.configure(text="")
@@ -760,19 +791,19 @@ class CostingApp(ctk.CTk):
         self.recompute()
 
     def _save_lot(self):
+        """Save silently to the lots folder — no dialog.
+
+        The JSON files are working data the operator never opens by hand, so
+        there is nothing for him to choose; the filename comes from the lot
+        reference + date, and re-saving the same lot updates it in place.
+        """
         lot = self._current_lot()
         products = self._products_for_compute()  # incl. synthesised wastage row
-        path = filedialog.asksaveasfilename(
-            title="Save Lot", defaultextension=".json",
-            initialdir=str(storage.lots_dir()),
-            initialfile=storage.default_filename(lot, "json"),
-            filetypes=[("Lot files", "*.json")],
-        )
-        if not path:
-            return
+        path = storage.lots_dir() / storage.default_filename(lot, "json")
         try:
-            storage.save_lot(lot, products, path)
-            messagebox.showinfo("Save Lot", "Lot saved successfully.")
+            storage.save_lot(lot, products, str(path))
+            messagebox.showinfo(
+                "Save Lot", "Lot saved. Use Open to load it again later.")
         except Exception as exc:  # noqa: BLE001 — surface any IO error friendly
             messagebox.showerror("Save Lot", f"Could not save the lot:\n{exc}")
 
@@ -795,7 +826,8 @@ class CostingApp(ctk.CTk):
         results = calculations.compute(lot, products)
         path = filedialog.asksaveasfilename(
             title="Export to Excel", defaultextension=".xlsx",
-            initialfile=storage.default_filename(lot, "xlsx"),
+            initialdir=str(reports_dir()),
+            initialfile=report_filename(lot),
             filetypes=[("Excel files", "*.xlsx")],
         )
         if not path:
