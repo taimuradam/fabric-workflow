@@ -72,7 +72,7 @@ executable from macOS/Linux. Open a Command Prompt in the project folder and cop
 python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
-pyinstaller --onefile --windowed --noconsole --name TextileCosting --collect-all openpyxl --collect-all customtkinter main.py
+pyinstaller --onefile --windowed --noconsole --name TextileCosting --icon assets\icon.ico --add-data "assets;assets" --collect-all openpyxl --collect-all customtkinter main.py
 ```
 
 What the flags do:
@@ -80,6 +80,10 @@ What the flags do:
 - `--onefile` — bundle everything into a single `.exe`.
 - `--windowed --noconsole` — GUI app; **no black terminal window ever appears**.
 - `--name TextileCosting` — names the output `TextileCosting.exe`.
+- `--icon assets\icon.ico` — the fabric-weave icon shown on the `.exe` file,
+  taskbar, and Start menu.
+- `--add-data "assets;assets"` — bundles the icon so the window title bar can
+  use it at runtime too (the `;` separator is the Windows form).
 - `--collect-all openpyxl` — force-bundles openpyxl (without this, the Excel
   export can fail in the packaged app with a missing-module error).
 - `--collect-all customtkinter` — **required**: CustomTkinter ships its own theme

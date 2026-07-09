@@ -22,6 +22,8 @@ lots (wastage as an is_wastage row) load correctly, and new saves remain readabl
 by older builds.
 """
 
+import os
+import sys
 from datetime import date, datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox
@@ -77,6 +79,16 @@ def fmt(value, money=False, decimals=2):
 def kgfmt(value):
     """Compact weight for sentences: 500.0 -> '500', 18.5 -> '18.5'."""
     return f"{value:g}"
+
+
+def resource_path(relative: str) -> str:
+    """Absolute path to a bundled asset, both as a script and as a frozen exe.
+
+    PyInstaller unpacks --add-data files into a temp dir exposed as
+    sys._MEIPASS; when running from source, fall back to this file's folder.
+    """
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, relative)
 
 
 def reports_dir() -> Path:
@@ -313,6 +325,7 @@ class CostingApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Fabric Costing Calculator")
+        self._set_window_icon()
         self._header_sync_pending = False
         self._set_initial_geometry()
         self.minsize(1120, 840)
@@ -362,6 +375,24 @@ class CostingApp(ctk.CTk):
         self._new_lot(confirm=False)
 
     # -------------------------------------------------------------- chrome ---
+    def _set_window_icon(self):
+        """Use the app's fabric-weave icon for the window / taskbar.
+
+        CustomTkinter applies its own default icon ~200ms after launch on
+        Windows, so the icon is set again after that to win the race. The .ico
+        format is Windows-only; other platforms just keep their default.
+        """
+        if sys.platform != "win32":
+            return
+        icon = resource_path(os.path.join("assets", "icon.ico"))
+        def apply():
+            try:
+                self.iconbitmap(icon)
+            except Exception:  # noqa: BLE001 — missing asset: keep default
+                pass
+        apply()
+        self.after(300, apply)
+
     def _set_initial_geometry(self):
         """Open near-screen-sized and centered instead of a fixed 1200×900.
 
