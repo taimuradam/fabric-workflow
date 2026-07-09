@@ -16,13 +16,18 @@ All amounts are in **PKR (Rs)**.
 - **Export to Excel** — a formatted `.xlsx` mirroring the paper sheet.
 - Ships as a single double-click `.exe` — no Python, no terminal for the end user.
 
+The interface is a modern HTML/CSS/JS frontend rendered in a native window via
+**pywebview**; all the business logic stays in pure Python modules.
+
 ---
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `main.py` | The app window (tkinter GUI) and entry point. |
+| `main.py` | Creates the pywebview window and starts the app (entry point). |
+| `api.py` | Bridge exposed to the frontend (`window.pywebview.api`). |
+| `frontend/index.html`, `style.css`, `app.js` | The user interface. |
 | `calculations.py` | All the business formulas (pure, tested). |
 | `excel_export.py` | Builds the formatted Excel workbook. |
 | `storage.py` | Save / load a lot to / from JSON. |
@@ -71,7 +76,7 @@ executable from macOS/Linux. Open a Command Prompt in the project folder and cop
 python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
-pyinstaller --onefile --windowed --noconsole --name TextileCosting --collect-all openpyxl main.py
+pyinstaller --onefile --windowed --noconsole --name TextileCosting --add-data "frontend;frontend" --collect-all openpyxl --collect-all webview main.py
 ```
 
 What the flags do:
@@ -79,8 +84,11 @@ What the flags do:
 - `--onefile` — bundle everything into a single `.exe`.
 - `--windowed --noconsole` — GUI app; **no black terminal window ever appears**.
 - `--name TextileCosting` — names the output `TextileCosting.exe`.
+- `--add-data "frontend;frontend"` — bundles the HTML/CSS/JS interface into the
+  exe (the `;` separator is the Windows form; on macOS/Linux it's a `:`).
 - `--collect-all openpyxl` — force-bundles openpyxl (without this, the Excel
   export can fail in the packaged app with a missing-module error).
+- `--collect-all webview` — force-bundles pywebview and its platform backend.
 
 ### Where the `.exe` ends up
 
@@ -93,6 +101,12 @@ dist\TextileCosting.exe
 Double-click it to run. It creates a `lots\` folder next to itself the first time
 you save a lot. You can copy `TextileCosting.exe` anywhere (desktop, USB drive) —
 it's fully self-contained.
+
+> **WebView2 runtime:** on Windows, pywebview renders through the Microsoft Edge
+> **WebView2** runtime. This is pre-installed on virtually all Windows 10/11 PCs
+> (it ships with Edge), so it normally just works — but it's worth confirming on
+> the target PC during the first test. If the window comes up blank, install the
+> free "Evergreen WebView2 Runtime" from Microsoft and relaunch.
 
 > **Test the built exe, not just the script:** double-click `dist\TextileCosting.exe`,
 > enter a lot, and use **Export to Excel** to confirm openpyxl was bundled

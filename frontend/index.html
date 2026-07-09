@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Textile Lot Costing</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- ============================ Toolbar ============================ -->
+  <header class="toolbar">
+    <div class="toolbar__brand">
+      <span class="toolbar__mark">▦</span>
+      <h1>Textile Lot Costing</h1>
+    </div>
+    <div class="toolbar__actions">
+      <button id="btn-new" class="btn btn--ghost" type="button">New Lot</button>
+      <button id="btn-save" class="btn btn--outline" type="button">Save Lot</button>
+      <button id="btn-open" class="btn btn--outline" type="button">Open Lot</button>
+      <button id="btn-export" class="btn btn--primary" type="button">Export to Excel</button>
+    </div>
+  </header>
+
+  <main class="page">
+    <!-- ========================= Lot Information ===================== -->
+    <section class="card">
+      <div class="card__head">
+        <h2>Lot Information</h2>
+        <p class="card__hint">Details of the fabric received from the supplier.</p>
+      </div>
+      <div class="field-grid">
+        <label class="field">
+          <span class="field__label">Lot Reference</span>
+          <input id="reference" class="field__input" type="text" placeholder="e.g. CVC-3" />
+        </label>
+        <label class="field">
+          <span class="field__label">Fabric Type</span>
+          <input id="fabric_type" class="field__input" type="text" placeholder="e.g. CVC" />
+        </label>
+        <label class="field">
+          <span class="field__label">Date</span>
+          <input id="date" class="field__input" type="date" />
+        </label>
+        <label class="field">
+          <span class="field__label">GSM</span>
+          <input id="gsm" class="field__input" type="text" inputmode="decimal" placeholder="grams / m²" />
+        </label>
+        <label class="field">
+          <span class="field__label">Width (inches)</span>
+          <input id="width_in" class="field__input" type="text" inputmode="decimal" placeholder="inches" />
+        </label>
+        <label class="field">
+          <span class="field__label">Total KG Received</span>
+          <input id="total_kg" class="field__input" type="text" inputmode="decimal" placeholder="kg" />
+        </label>
+        <label class="field">
+          <span class="field__label">Rate per Meter</span>
+          <input id="rate_per_meter" class="field__input" type="text" inputmode="decimal" placeholder="Rs / meter" />
+        </label>
+        <label class="field">
+          <span class="field__label">Transport Cost</span>
+          <input id="transport_cost" class="field__input" type="text" inputmode="decimal" placeholder="Rs (flat)" />
+        </label>
+      </div>
+    </section>
+
+    <!-- ========================= Lot Calculations =================== -->
+    <section class="card">
+      <div class="card__head">
+        <h2>Lot Calculations</h2>
+        <p class="card__hint">Worked out automatically — you can’t type in these.</p>
+      </div>
+      <div class="stat-grid" id="lot-calcs">
+        <div class="stat"><span class="stat__label">Meters per KG</span><span class="stat__value" data-calc="meters_per_kg">—</span></div>
+        <div class="stat"><span class="stat__label">Total Meters</span><span class="stat__value" data-calc="total_meters">—</span></div>
+        <div class="stat"><span class="stat__label">Fabric Cost</span><span class="stat__value" data-calc="fabric_cost">—</span></div>
+        <div class="stat"><span class="stat__label">Total Cost</span><span class="stat__value" data-calc="total_cost">—</span></div>
+        <div class="stat"><span class="stat__label">Base Cost per KG</span><span class="stat__value" data-calc="base_cost_per_kg">—</span></div>
+        <div class="stat"><span class="stat__label">Wastage Cost per KG</span><span class="stat__value" data-calc="wastage_cost_per_kg">—</span></div>
+        <div class="stat stat--accent"><span class="stat__label">Adjusted Cost per KG</span><span class="stat__value" data-calc="adjusted_cost_per_kg">—</span></div>
+      </div>
+    </section>
+
+    <!-- ============================ Products ========================= -->
+    <section class="card">
+      <div class="card__head card__head--row">
+        <div>
+          <h2>Products</h2>
+          <p class="card__hint">Type into Product, Weight and Pieces. Tick one row as wastage.</p>
+        </div>
+        <button id="btn-add-row" class="btn btn--outline" type="button">+ Add Row</button>
+      </div>
+      <div class="table-wrap">
+        <table class="products">
+          <thead>
+            <tr>
+              <th class="col-name">Product</th>
+              <th class="col-num">Weight (kg)</th>
+              <th class="col-num">Pieces</th>
+              <th class="col-waste">Wastage</th>
+              <th class="col-calc">Wt. / Pc</th>
+              <th class="col-calc">Cost / Pc</th>
+              <th class="col-calc">Revenue</th>
+              <th class="col-del" aria-label="Delete"></th>
+            </tr>
+          </thead>
+          <tbody id="product-rows"></tbody>
+          <tfoot>
+            <tr class="products__total">
+              <td>Total</td>
+              <td class="num" data-total="total_weight_produced">—</td>
+              <td class="num" data-total="total_pieces">—</td>
+              <td></td>
+              <td></td>
+              <td></td>
+              <td class="num" data-total="total_receipt">—</td>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </section>
+
+    <!-- ===================== Reconciliation warning ================= -->
+    <!-- The message text from calculations.py already begins with a ⚠ icon. -->
+    <div id="recon-warning" class="warning" hidden>
+      <span id="recon-message"></span>
+    </div>
+
+    <!-- ============================ Summary ========================== -->
+    <section class="card card--summary">
+      <div class="card__head"><h2>Summary</h2></div>
+      <div class="summary">
+        <div class="summary__row">
+          <span class="summary__label">Total Weight Produced</span>
+          <span class="summary__value" data-total="total_weight_produced">—</span>
+        </div>
+        <div class="summary__row">
+          <span class="summary__label">Total Pieces</span>
+          <span class="summary__value" data-total="total_pieces">—</span>
+        </div>
+        <div class="summary__row">
+          <span class="summary__label">Total Payment (Cost)</span>
+          <span class="summary__value" data-total="total_payment">—</span>
+        </div>
+        <div class="summary__row">
+          <span class="summary__label">Total Receipt (Revenue)</span>
+          <span class="summary__value" data-total="total_receipt">—</span>
+        </div>
+        <div class="summary__row summary__row--profit">
+          <span class="summary__label">Profit</span>
+          <span class="summary__value" id="profit-value">—</span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Lightweight toast for save/open/export feedback -->
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
