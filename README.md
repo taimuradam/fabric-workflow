@@ -22,7 +22,7 @@ All amounts are in **PKR (Rs)**.
 
 | File | Purpose |
 |------|---------|
-| `main.py` | The app window (tkinter GUI) and entry point. |
+| `main.py` | The app window (CustomTkinter GUI) and entry point. |
 | `calculations.py` | All the business formulas (pure, tested). |
 | `excel_export.py` | Builds the formatted Excel workbook. |
 | `storage.py` | Save / load a lot to / from JSON. |
@@ -71,7 +71,7 @@ executable from macOS/Linux. Open a Command Prompt in the project folder and cop
 python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
-pyinstaller --onefile --windowed --noconsole --name TextileCosting --collect-all openpyxl main.py
+pyinstaller --onefile --windowed --noconsole --name TextileCosting --collect-all openpyxl --collect-all customtkinter main.py
 ```
 
 What the flags do:
@@ -81,6 +81,11 @@ What the flags do:
 - `--name TextileCosting` — names the output `TextileCosting.exe`.
 - `--collect-all openpyxl` — force-bundles openpyxl (without this, the Excel
   export can fail in the packaged app with a missing-module error).
+- `--collect-all customtkinter` — **required**: CustomTkinter ships its own theme
+  JSON files and fonts that PyInstaller does *not* auto-detect. Without this the
+  `.exe` launches with broken styling or crashes on startup — even though
+  `python main.py` works fine. (This is the single most common CustomTkinter
+  packaging mistake.)
 
 ### Where the `.exe` ends up
 
