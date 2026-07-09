@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/icon.png" width="96" alt="Fabric Costing Calculator icon">
+</p>
+
 # Textile Lot Costing
 
 A standalone Windows desktop app that replaces the paper costing sheet used for a
