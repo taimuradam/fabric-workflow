@@ -59,6 +59,9 @@ RECON_BG         = "#f2f7f3"   # reconciliation status bar fill
 # the grids line up (CTk has no Treeview; this is the manual-table approach).
 #   col 0 Product (expands) · 1 Weight · 2 Pieces · 3 Wt/Pc · 4 Cost/pc · 5 ✕
 COL_MIN = {1: 84, 2: 68, 3: 62, 4: 122, 5: 30}
+# Extra width is shared, not dumped on the name column: Product grows 3× while
+# Weight / Pieces / Cost each grow 1× (keeps fullscreen proportions sane).
+COL_WEIGHT = {0: 3, 1: 1, 2: 1, 3: 0, 4: 1, 5: 0}
 
 
 def fmt(value, money=False, decimals=2):
@@ -77,9 +80,9 @@ def kgfmt(value):
 
 def configure_table_grid(frame):
     """Apply the shared products-table column scheme to a grid container."""
-    frame.grid_columnconfigure(0, weight=1)
-    for col, size in COL_MIN.items():
-        frame.grid_columnconfigure(col, minsize=size, weight=0)
+    for col in range(6):
+        frame.grid_columnconfigure(col, weight=COL_WEIGHT[col],
+                                   minsize=COL_MIN.get(col, 0))
 
 
 class UnitEntry(ctk.CTkFrame):
@@ -173,6 +176,11 @@ class ProductRow:
         for cell in (self.name, self.weight, self.pieces):
             cell.bind_keyrelease(app.recompute)
 
+        # The row's own <Configure> is the reliable resize signal: it fires
+        # AFTER the row has its new geometry (the card's fires before, so a
+        # sync triggered there reads stale column widths).
+        self.frame.bind("<Configure>", lambda e: app._schedule_header_sync())
+
     def to_product(self):
         w = self.weight_var.get().strip()
         p = self.pieces_var.get().strip()
@@ -214,8 +222,8 @@ class CostingApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Fabric Costing Calculator")
-        self._fit_display_scaling()
-        self.geometry("1200x900")
+        self._header_sync_pending = False
+        self._set_initial_geometry()
         self.minsize(1120, 840)
         ctk.set_appearance_mode("light")
         self.configure(fg_color=BG)
@@ -250,24 +258,25 @@ class CostingApp(ctk.CTk):
         self._new_lot(confirm=False)
 
     # -------------------------------------------------------------- chrome ---
-    def _fit_display_scaling(self):
-        """Cap CTk's DPI scaling so the full 1200×900 window fits the screen.
+    def _set_initial_geometry(self):
+        """Open near-screen-sized instead of a fixed 1200×900.
 
-        On Windows at 125/150 % display scaling, CustomTkinter multiplies the
-        window size by the DPI factor (1200×900 → 1500×1125), which overflows a
-        1080p monitor and forces the user to fullscreen. Downscale just enough
-        to fit (leaving room for the OS title bar and taskbar); never upscale
-        beyond the OS factor, and never touch anything if it already fits.
+        Targets the full screen minus room for the OS title bar and taskbar,
+        clamped to sane bounds. CTk multiplies geometry() by its window-scaling
+        factor, so the physical target is divided back to logical units first.
         """
         try:
-            current = ctk.ScalingTracker.get_widget_scaling(self)
-            sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-            fit = min(sw / 1240, (sh - 90) / 900, current)
-            if fit < current - 0.01:
-                ctk.set_widget_scaling(fit)
-                ctk.set_window_scaling(fit)
-        except Exception:  # noqa: BLE001 — scaling API drift: keep defaults
-            pass
+            scaling = ctk.ScalingTracker.get_window_scaling(self)
+        except Exception:  # noqa: BLE001
+            scaling = 1.0
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        phys_w = max(min(sw - 140, 1880), 1000)
+        phys_h = max(min(sh - 80, 1160), 760)
+        geo = f"{int(phys_w / scaling)}x{int(phys_h / scaling)}"
+        self.geometry(geo)
+        # CTk's set_*_scaling() re-applies its stored window size asynchronously
+        # and can clobber a geometry set during startup — re-assert once settled.
+        self.after(250, lambda: self.geometry(geo))
 
     def _build_toolbar(self):
         bar = ctk.CTkFrame(self, fg_color=BG, corner_radius=0, height=58)
@@ -333,9 +342,6 @@ class CostingApp(ctk.CTk):
         center.grid(row=0, column=1, sticky="nsew")
         self.center_card = center
         self._build_products_card(center)
-        # Re-align the column header whenever the card is resized.
-        center.bind("<Configure>",
-                    lambda e: self.after_idle(self._sync_product_header))
 
         right = ctk.CTkFrame(body, fg_color="transparent", width=296)
         right.grid(row=0, column=2, sticky="nsew", padx=(16, 0))
@@ -470,6 +476,20 @@ class CostingApp(ctk.CTk):
                                         font=self.font_small, text_color=MUTED,
                                         anchor="w")
         self.recon_label.pack(fill="x", padx=16)
+
+    def _schedule_header_sync(self, *_):
+        """Coalesce bursts of <Configure> events into one sync ~30 ms later."""
+        if self._header_sync_pending:
+            return
+        self._header_sync_pending = True
+        self.after(30, self._run_header_sync)
+
+    def _run_header_sync(self):
+        self._header_sync_pending = False
+        try:
+            self._sync_product_header()
+        except Exception:  # noqa: BLE001 — window mid-teardown etc.
+            pass
 
     def _sync_product_header(self):
         """Pin the header columns to the first row's actual pixel geometry.
@@ -663,7 +683,7 @@ class CostingApp(ctk.CTk):
             text=f"{fmt(results.total_weight_produced)} kg")
 
         self._refresh_recon(results, total_kg)
-        self.after_idle(self._sync_product_header)
+        self._schedule_header_sync()
 
     def _refresh_recon(self, results, total_kg):
         """Reconciliation status bar: green when it adds up, orange on mismatch."""
@@ -788,7 +808,41 @@ class CostingApp(ctk.CTk):
             messagebox.showerror("Export to Excel", f"Could not export:\n{exc}")
 
 
+def _fit_scaling_to_screen():
+    """Cap CTk's DPI scaling so the full content fits the screen.
+
+    On Windows at 125/150 % display scaling, CustomTkinter multiplies every
+    dimension by the DPI factor, so the ~900px-tall layout overflows a 1080p
+    monitor and forces the user to fullscreen. This computes a scaling that
+    fits and applies it BEFORE any CTk window exists — calling the set_*_scaling
+    functions on a live window makes CTk's ScalingTracker asynchronously revert
+    the window geometry, so the decision has to happen up front.
+    """
+    import tkinter
+    try:
+        # Make the process DPI-aware first so the probe reads true pixels.
+        ctk.ScalingTracker.activate_high_dpi_awareness()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        probe = tkinter.Tk()
+        probe.withdraw()
+        sw, sh = probe.winfo_screenwidth(), probe.winfo_screenheight()
+        if probe.tk.call("tk", "windowingsystem") == "win32":
+            dpi = probe.winfo_fpixels("1i") / 96.0  # 96 dpi == 100 % scaling
+        else:
+            dpi = 1.0  # macOS/X11 handle high-DPI natively
+        probe.destroy()
+    except Exception:  # noqa: BLE001 — no display etc.: keep defaults
+        return
+    fit = min(sw / 1240, (sh - 90) / 900, dpi)
+    if fit < dpi - 0.01:
+        ctk.set_widget_scaling(fit)
+        ctk.set_window_scaling(fit)
+
+
 def main():
+    _fit_scaling_to_screen()
     app = CostingApp()
     app.mainloop()
 
