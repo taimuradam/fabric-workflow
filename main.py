@@ -91,11 +91,14 @@ class UnitEntry(ctk.CTkFrame):
     nearest-clean-CTk-equivalent.
     """
 
-    def __init__(self, parent, textvariable, *, font, height=40, prefix=None,
-                 suffix=None, justify="left", fg=CARD, border=CARD_BORDER,
-                 placeholder=None):
+    def __init__(self, parent, textvariable, *, font, height=40, width=200,
+                 prefix=None, suffix=None, justify="left", fg=CARD,
+                 border=CARD_BORDER, placeholder=None):
+        # width matters: a CTkFrame defaults to 200px, and with
+        # pack_propagate(False) that request would blow out fixed table columns.
         super().__init__(parent, fg_color=fg, border_width=1,
-                         border_color=border, corner_radius=6, height=height)
+                         border_color=border, corner_radius=6, height=height,
+                         width=width)
         self.pack_propagate(False)
         unit_font = ctk.CTkFont(size=12)
         if prefix:
@@ -131,16 +134,18 @@ class ProductRow:
         self.pieces_var = ctk.StringVar(
             value="" if product.pieces in (None, "") else str(product.pieces))
 
+        # width=60: request small so the weight=1 column stretches it; a larger
+        # request would overflow the scroll canvas and break header alignment.
         self.name = UnitEntry(self.frame, self.name_var, font=app.font_body,
-                              placeholder="Add a product…")
+                              placeholder="Add a product…", width=60)
         self.name.grid(row=0, column=0, sticky="ew", padx=(0, 8), pady=(0, 6))
 
         self.weight = UnitEntry(self.frame, self.weight_var, font=app.font_body,
-                                suffix="kg", justify="right")
+                                suffix="kg", justify="right", width=COL_MIN[1])
         self.weight.grid(row=0, column=1, sticky="ew", padx=(0, 8), pady=(0, 6))
 
         self.pieces = UnitEntry(self.frame, self.pieces_var, font=app.font_body,
-                                justify="right")
+                                justify="right", width=COL_MIN[2])
         self.pieces.grid(row=0, column=2, sticky="ew", padx=(0, 8), pady=(0, 6))
 
         # Wt / Pc — read-only computed label.
@@ -150,8 +155,9 @@ class ProductRow:
 
         # Cost per piece — the visual hero: teal-tinted cell, 17 bold teal text.
         self.cost_cell = ctk.CTkFrame(self.frame, fg_color=TEAL_TINT,
-                                      corner_radius=6, height=40)
-        self.cost_cell.grid(row=0, column=4, sticky="ew", padx=(0, 4), pady=(0, 6))
+                                      corner_radius=6, height=40,
+                                      width=COL_MIN[4])
+        self.cost_cell.grid(row=0, column=4, sticky="ew", padx=(0, 8), pady=(0, 6))
         self.cost_cell.pack_propagate(False)
         self.cost = ctk.CTkLabel(self.cost_cell, text="—", font=app.font_cost,
                                  text_color=TEAL_HOVER, anchor="e")
@@ -208,6 +214,7 @@ class CostingApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Fabric Costing Calculator")
+        self._fit_display_scaling()
         self.geometry("1200x900")
         self.minsize(1120, 840)
         ctk.set_appearance_mode("light")
@@ -232,7 +239,6 @@ class CostingApp(ctk.CTk):
             "reference", "fabric_type", "date", "gsm", "width_in", "total_kg",
             "rate_per_meter", "transport_cost", "wastage_kg")}
 
-        self._build_titlebar()
         self._build_toolbar()
         self._build_body()
 
@@ -244,17 +250,24 @@ class CostingApp(ctk.CTk):
         self._new_lot(confirm=False)
 
     # -------------------------------------------------------------- chrome ---
-    def _build_titlebar(self):
-        bar = ctk.CTkFrame(self, fg_color=CARD, corner_radius=0, height=36,
-                           border_width=0)
-        bar.pack(fill="x")
-        bar.pack_propagate(False)
-        ctk.CTkFrame(bar, width=14, height=14, fg_color=TEAL,
-                     corner_radius=3).pack(side="left", padx=(14, 8))
-        ctk.CTkLabel(bar, text="Fabric Costing Calculator", font=self.font_field,
-                     text_color=MUTED).pack(side="left")
-        ctk.CTkFrame(self, fg_color=CARD_BORDER, height=1,
-                     corner_radius=0).pack(fill="x")
+    def _fit_display_scaling(self):
+        """Cap CTk's DPI scaling so the full 1200×900 window fits the screen.
+
+        On Windows at 125/150 % display scaling, CustomTkinter multiplies the
+        window size by the DPI factor (1200×900 → 1500×1125), which overflows a
+        1080p monitor and forces the user to fullscreen. Downscale just enough
+        to fit (leaving room for the OS title bar and taskbar); never upscale
+        beyond the OS factor, and never touch anything if it already fits.
+        """
+        try:
+            current = ctk.ScalingTracker.get_widget_scaling(self)
+            sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+            fit = min(sw / 1240, (sh - 90) / 900, current)
+            if fit < current - 0.01:
+                ctk.set_widget_scaling(fit)
+                ctk.set_window_scaling(fit)
+        except Exception:  # noqa: BLE001 — scaling API drift: keep defaults
+            pass
 
     def _build_toolbar(self):
         bar = ctk.CTkFrame(self, fg_color=BG, corner_radius=0, height=58)
@@ -318,7 +331,11 @@ class CostingApp(ctk.CTk):
         center = ctk.CTkFrame(body, fg_color=CARD, border_width=1,
                               border_color=CARD_BORDER, corner_radius=8)
         center.grid(row=0, column=1, sticky="nsew")
+        self.center_card = center
         self._build_products_card(center)
+        # Re-align the column header whenever the card is resized.
+        center.bind("<Configure>",
+                    lambda e: self.after_idle(self._sync_product_header))
 
         right = ctk.CTkFrame(body, fg_color="transparent", width=296)
         right.grid(row=0, column=2, sticky="nsew", padx=(16, 0))
@@ -424,17 +441,21 @@ class CostingApp(ctk.CTk):
                       command=lambda: (self._add_row(Product(name="")),
                                        self.recompute())).pack(side="right")
 
-        # Column header (fixed; same grid scheme as the rows).
+        # Column header (fixed; starts on the shared grid scheme, then
+        # _sync_product_header pins each column to the rows' real pixel widths).
         header = ctk.CTkFrame(card, fg_color="transparent")
-        header.pack(fill="x", padx=(18, 30), pady=(6, 0))
+        header.pack(fill="x", anchor="w", padx=(18, 0), pady=(6, 0))
         configure_table_grid(header)
+        self.products_header = header
         cols = [("PRODUCT", "w", FAINT), ("WEIGHT", "e", FAINT),
                 ("PIECES", "e", FAINT), ("WT / PC", "e", FAINT),
                 ("COST PER PIECE", "e", TEAL_HOVER), ("", "e", FAINT)]
+        self._header_labels = []
         for i, (text, anchor, color) in enumerate(cols):
-            ctk.CTkLabel(header, text=text, font=self.font_section,
-                         text_color=color, anchor=anchor).grid(
-                row=0, column=i, sticky="ew", padx=(0, 8) if i < 5 else 0)
+            lbl = ctk.CTkLabel(header, text=text, font=self.font_section,
+                               text_color=color, anchor=anchor)
+            lbl.grid(row=0, column=i, sticky="ew", padx=(0, 8) if i < 5 else 0)
+            self._header_labels.append(lbl)
 
         # Product rows — the ONLY scrolling region in the app.
         self.table = ctk.CTkScrollableFrame(card, fg_color="transparent")
@@ -449,6 +470,31 @@ class CostingApp(ctk.CTk):
                                         font=self.font_small, text_color=MUTED,
                                         anchor="w")
         self.recon_label.pack(fill="x", padx=16)
+
+    def _sync_product_header(self):
+        """Pin the header columns to the first row's actual pixel geometry.
+
+        The header and the rows live in different parents (the rows sit inside a
+        CTkScrollableFrame whose canvas/scrollbar eat an unpredictable number of
+        pixels, DPI-scaled), so two independently-computed grids drift apart.
+        Measuring the real row and copying its column widths + left origin onto
+        the header is exact under any DPI, scrollbar width, or window size.
+        """
+        if not self.rows:
+            return
+        row = self.rows[0].frame
+        if not row.winfo_ismapped():
+            return
+        # Match the header's left edge to the rows' left edge.
+        dx = row.winfo_rootx() - self.center_card.winfo_rootx()
+        if dx > 0:
+            self.products_header.pack_configure(padx=(dx, 0))
+        # Copy each column's real width.
+        for i in range(6):
+            bbox = row.grid_bbox(column=i, row=0)
+            if bbox and bbox[2] > 0:
+                self.products_header.grid_columnconfigure(
+                    i, minsize=bbox[2], weight=0)
 
     # ---------------------------------------------------------- right column ---
     def _build_right_column(self, container):
@@ -617,6 +663,7 @@ class CostingApp(ctk.CTk):
             text=f"{fmt(results.total_weight_produced)} kg")
 
         self._refresh_recon(results, total_kg)
+        self.after_idle(self._sync_product_header)
 
     def _refresh_recon(self, results, total_kg):
         """Reconciliation status bar: green when it adds up, orange on mismatch."""
