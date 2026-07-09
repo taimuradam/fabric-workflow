@@ -311,6 +311,11 @@ class CostingApp(ctk.CTk):
         self._build_toolbar()
         self._build_body()
 
+        # First launch (or the configured folder was deleted): ask where saved
+        # lots should live, once the window is up so the dialog has a parent.
+        if not self._stored_lots_dir():
+            self.after(600, self._ensure_lots_dir)
+
         for var in self.vars.values():
             var.trace_add("write", self.recompute)
         for key in ("reference", "fabric_type", "date"):
@@ -829,16 +834,71 @@ class CostingApp(ctk.CTk):
             self._add_row(Product(name=""))
         self.recompute()
 
+    # ---------------------------------------------------------- lots folder ---
+    def _stored_lots_dir(self):
+        """The configured saved-lots folder, or None if unset or deleted."""
+        stored = self._settings.get("lots_dir")
+        if stored and Path(stored).is_dir():
+            return Path(stored)
+        return None
+
+    def _ensure_lots_dir(self) -> Path:
+        """Return the saved-lots folder, asking the user to place it on first use.
+
+        A "Fabric Lot Files" folder is created inside the chosen location and
+        persisted in settings.json. Cancelling the picker falls back to
+        Documents so saving always works. Lots saved by older builds (in the
+        lots/ folder next to the app) are migrated over.
+        """
+        existing = self._stored_lots_dir()
+        if existing:
+            return existing
+        docs = Path.home() / "Documents"
+        default_base = docs if docs.exists() else Path.home()
+        messagebox.showinfo(
+            "Saved lots folder",
+            "Choose where the app should keep your saved lot files.\n\n"
+            'A folder called "Fabric Lot Files" will be created there.\n'
+            "(If you press Cancel, it will be created in Documents.)")
+        picked = filedialog.askdirectory(
+            title="Choose where to keep saved lots",
+            initialdir=str(default_base))
+        base = Path(picked) if picked else default_base
+        # Don't nest a second level if the user selected the folder itself.
+        d = base if base.name == "Fabric Lot Files" else base / "Fabric Lot Files"
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except Exception:  # noqa: BLE001 — unwritable pick: fall back safely
+            d = default_base / "Fabric Lot Files"
+            d.mkdir(parents=True, exist_ok=True)
+        self._settings["lots_dir"] = str(d)
+        save_settings(self._settings)
+        self._migrate_old_lots(d)
+        return d
+
+    def _migrate_old_lots(self, dest: Path):
+        """Move lots saved by older builds (lots/ next to the app) into dest."""
+        import shutil
+        old = storage.app_dir() / "lots"
+        try:
+            if old.is_dir() and old.resolve() != dest.resolve():
+                for f in old.glob("*.json"):
+                    if not (dest / f.name).exists():
+                        shutil.move(str(f), str(dest / f.name))
+        except Exception:  # noqa: BLE001 — best-effort; old files stay put
+            pass
+
     def _save_lot(self):
         """Quick save — no dialog.
 
         Writes to the lot's bound file (set by a previous Save, Save As, or
-        Open); a never-saved lot defaults to lots/{reference}_{date}.json.
+        Open); a never-saved lot defaults to {reference}_{date}.json in the
+        Fabric Lot Files folder.
         """
         lot = self._current_lot()
         products = self._products_for_compute()  # incl. synthesised wastage row
         path = self._current_save_path or (
-            storage.lots_dir() / storage.default_filename(lot, "json"))
+            self._ensure_lots_dir() / storage.default_filename(lot, "json"))
         self._write_lot(lot, products, path)
 
     def _save_lot_as(self):
@@ -849,7 +909,7 @@ class CostingApp(ctk.CTk):
             initialdir = str(self._current_save_path.parent)
             initialfile = self._current_save_path.name
         else:
-            initialdir = str(storage.lots_dir())
+            initialdir = str(self._ensure_lots_dir())
             initialfile = storage.default_filename(lot, "json")
         path = filedialog.asksaveasfilename(
             title="Save Lot As", defaultextension=".json",
@@ -870,7 +930,7 @@ class CostingApp(ctk.CTk):
 
     def _open_lot(self):
         path = filedialog.askopenfilename(
-            title="Open Lot", initialdir=str(storage.lots_dir()),
+            title="Open Lot", initialdir=str(self._ensure_lots_dir()),
             filetypes=[("Lot files", "*.json"), ("All files", "*.*")],
         )
         if not path:
