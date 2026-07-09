@@ -65,14 +65,18 @@ python test_calculations.py
 ## Building the Windows `.exe`
 
 **Do this on a Windows machine** — PyInstaller cannot cross-compile a Windows
-executable from macOS/Linux. Open a Command Prompt in the project folder and copy
--paste the block below:
+executable from macOS/Linux.
+
+**Easiest way:** set up the venv once (first three lines below), then just run
+**`build.bat`** — it always uses the right flags, including the app icon.
+
+Or copy-paste the full block into a Command Prompt in the project folder:
 
 ```bat
 python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
-pyinstaller --onefile --windowed --noconsole --name TextileCosting --icon assets\icon.ico --add-data "assets;assets" --collect-all openpyxl --collect-all customtkinter main.py
+pyinstaller --clean --onefile --windowed --noconsole --name TextileCosting --icon assets\icon.ico --add-data "assets;assets" --collect-all openpyxl --collect-all customtkinter main.py
 ```
 
 What the flags do:
@@ -91,6 +95,15 @@ What the flags do:
   `.exe` launches with broken styling or crashes on startup — even though
   `python main.py` works fine. (This is the single most common CustomTkinter
   packaging mistake.)
+- `--clean` — clears PyInstaller's build cache so stale resources (like an old
+  icon) can't leak into the new exe.
+
+> **Icon looks old/missing after a rebuild?** That's almost always **Windows
+> Explorer's icon cache**, not the build: Explorer remembers the old icon for a
+> file at the same path. Rename or copy `TextileCosting.exe` (or move it to
+> another folder) and the new fabric-weave icon will appear. Also make sure you
+> rebuilt with the command above / `build.bat` — an old command from shell
+> history won't include `--icon`.
 
 ### Where the `.exe` ends up
 
