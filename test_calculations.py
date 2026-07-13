@@ -10,7 +10,7 @@ zero/blank/invalid input.
 import math
 import unittest
 
-from calculations import LotInfo, Product, compute, parse_number
+from calculations import LotInfo, Product, compute, kg_from_meters, parse_number
 
 
 class ParseNumberTests(unittest.TestCase):
@@ -128,6 +128,24 @@ class EdgeCaseTests(unittest.TestCase):
         lot = LotInfo(gsm=180, width_in=90, total_kg=100.0, rate_per_meter=50)
         r = compute(lot, [Product(name="A", weight_kg=100.005, pieces=50)])
         self.assertFalse(r.recon_mismatch)  # diff 0.005 < 0.01 tolerance
+
+
+class KgFromMetersTests(unittest.TestCase):
+    def test_round_trips_with_compute(self):
+        # meters -> kg -> compute() must return the same meters back.
+        kg = kg_from_meters(gsm="254", width_in="90", total_meters="128.74")
+        r = compute(LotInfo(gsm=254, width_in=90, total_kg=kg), [])
+        self.assertAlmostEqual(r.total_meters, 128.74, places=6)
+        # And the derived weight matches the user's real TEST-A lot (~74.75).
+        self.assertAlmostEqual(kg, 128.74 * (90 * 0.0254) * 254 / 1000, places=6)
+
+    def test_missing_or_zero_inputs_return_none(self):
+        for gsm, width, meters in [
+            (None, 90, 100), (254, "", 100), (254, 90, None),
+            (0, 90, 100), (254, 0, 100), ("abc", 90, 100),
+        ]:
+            self.assertIsNone(kg_from_meters(gsm, width, meters),
+                              msg=f"({gsm}, {width}, {meters})")
 
 
 if __name__ == "__main__":

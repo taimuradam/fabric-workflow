@@ -43,13 +43,17 @@ TEAL_TINT        = "#dcebe8"   # cost cell, adjusted tile, "+ Add product" fill
 TEAL_TINT_BORDER = "#bcd7d1"   # border of tinted teal buttons/cells
 BG               = "#eef0ec"   # window background, toolbar
 CARD             = "#ffffff"   # title bar, cards, entry fill
-CARD_BORDER      = "#dde2dd"   # card/entry borders
+CARD_BORDER      = "#dde2dd"   # card borders / hairlines
+INPUT_BORDER     = "#b9c4bd"   # editable-entry outlines — deliberately darker
+                               # than CARD_BORDER: a 1px near-white hairline
+                               # disappears entirely on some monitors and the
+                               # operator couldn't see where to type
 HAIRLINE         = "#eef0ec"   # inner row separators / dividers
 ROW_LINE         = "#f2f4f1"   # product-row bottom border
 TEXT             = "#1f2a30"   # primary text
 MUTED            = "#67757c"   # labels, secondary text
 FAINT            = "#9aa6ab"   # unit suffixes, column headers
-PLACEHOLDER      = "#c6cdc7"   # empty-row borders & em-dashes
+PLACEHOLDER      = "#c0c8c1"   # empty-row borders & em-dashes
 SECONDARY        = "#e4e8e3"   # secondary button fill
 SECONDARY_H      = "#d6dbd5"   # secondary button hover
 GREEN            = "#15803d"   # reconciliation "adds up"
@@ -91,25 +95,13 @@ def resource_path(relative: str) -> str:
     return os.path.join(base, relative)
 
 
-def reports_dir() -> Path:
-    """Where exported Excel reports go — somewhere the operator can find them.
-
-    Saved-lot JSON files live in `lots/` next to the app (working data the user
-    never opens by hand); reports go to a visible folder in Documents instead.
-    """
-    docs = Path.home() / "Documents"
-    base = docs if docs.exists() else Path.home()
-    d = base / "Fabric Costing Reports"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
 # --------------------------------------------------------- app data folder ---
 # NOTHING is written next to the .exe. Everything lives in one user-chosen
-# "Fabric Lot Files" folder: settings.json plus a "Saved Lots" subfolder for
-# the lot JSONs. The only thing outside it is a one-line locator in the OS
-# per-user config area (%APPDATA% on Windows) that records where that folder
-# is — without it the app couldn't find its own settings at launch.
+# "Fabric Lot Files" folder: settings.json plus "Saved Lots" (lot JSONs) and
+# "Excel Reports" (default export destination) subfolders. The only thing
+# outside it is a one-line locator in the OS per-user config area (%APPDATA%
+# on Windows) that records where that folder is — without it the app couldn't
+# find its own settings at launch.
 
 def _locator_path() -> Path:
     import os
@@ -199,10 +191,12 @@ class UnitEntry(ctk.CTkFrame):
 
     def __init__(self, parent, textvariable, *, font, height=40, width=200,
                  prefix=None, suffix=None, justify="left", fg=CARD,
-                 border=CARD_BORDER, placeholder=None):
+                 border=INPUT_BORDER, placeholder=None):
         # width matters: a CTkFrame defaults to 200px, and with
         # pack_propagate(False) that request would blow out fixed table columns.
-        super().__init__(parent, fg_color=fg, border_width=1,
+        # border_width=2: a 1px hairline can vanish on some monitors after DPI
+        # scaling rounds it away — 2px survives everywhere.
+        super().__init__(parent, fg_color=fg, border_width=2,
                          border_color=border, corner_radius=6, height=height,
                          width=width)
         self.pack_propagate(False)
@@ -298,7 +292,7 @@ class ProductRow:
         """Write the computed cells; style empty rows as placeholders."""
         empty = not (self.name_var.get().strip() or self.weight_var.get().strip()
                      or self.pieces_var.get().strip())
-        border = PLACEHOLDER if empty else CARD_BORDER
+        border = PLACEHOLDER if empty else INPUT_BORDER
         for cell in (self.name, self.weight, self.pieces):
             cell.set_border(border)
 
@@ -356,8 +350,9 @@ class CostingApp(ctk.CTk):
 
         self.rows = []
         self.vars = {k: ctk.StringVar() for k in (
-            "reference", "fabric_type", "date", "gsm", "width_in", "total_kg",
-            "rate_per_meter", "transport_cost", "wastage_kg")}
+            "reference", "fabric_type", "date", "gsm", "width_in",
+            "total_meters_in", "rate_per_meter", "transport_cost",
+            "wastage_kg")}
 
         self._build_toolbar()
         self._build_body()
@@ -540,8 +535,11 @@ class CostingApp(ctk.CTk):
         self._field(two2, "Width", "width_in", suffix="in", justify="right").grid(
             row=0, column=1, sticky="ew", padx=(5, 0))
 
-        self._field(inner, "Total fabric received", "total_kg", suffix="kg",
-                    justify="right", height=44,
+        # The supplier's invoice states fabric in METERS; the weight in kg is
+        # derived from GSM + width (see calculations.kg_from_meters) and shown
+        # in the Cost breakdown card.
+        self._field(inner, "Total fabric received", "total_meters_in",
+                    suffix="m", justify="right", height=44,
                     font=self.font_emph).pack(fill="x")
 
         self._divider(inner)
@@ -674,7 +672,7 @@ class CostingApp(ctk.CTk):
 
         self.breakdown = {}
         rows = [("meters_per_kg", "Meters per kg"),
-                ("total_meters", "Total meters"),
+                ("total_weight", "Total weight"),
                 ("fabric_cost", "Fabric cost"),
                 ("total_cost", "Total cost"),
                 ("base_cost_per_kg", "Base cost / kg"),
@@ -773,7 +771,12 @@ class CostingApp(ctk.CTk):
             date=v["date"].get().strip(),
             gsm=v["gsm"].get(),
             width_in=v["width_in"].get(),
-            total_kg=v["total_kg"].get(),
+            # The operator enters meters; the weight the whole calculation
+            # runs on (and the JSON stores) is derived here, so compute(),
+            # reconciliation, and old save files all keep working on kg.
+            total_kg=calculations.kg_from_meters(
+                v["gsm"].get(), v["width_in"].get(),
+                v["total_meters_in"].get()),
             rate_per_meter=v["rate_per_meter"].get(),
             transport_cost=v["transport_cost"].get(),
         )
@@ -792,9 +795,9 @@ class CostingApp(ctk.CTk):
         self.breakdown["meters_per_kg"].configure(
             text="—" if results.meters_per_kg is None
             else f"{fmt(results.meters_per_kg)} m")
-        self.breakdown["total_meters"].configure(
-            text="—" if results.total_meters is None
-            else f"{fmt(results.total_meters)} m")
+        derived_kg = calculations.parse_number(lot.total_kg)
+        self.breakdown["total_weight"].configure(
+            text="—" if derived_kg is None else f"{fmt(derived_kg)} kg")
         for key in ("fabric_cost", "total_cost", "base_cost_per_kg"):
             self.breakdown[key].configure(
                 text=fmt(getattr(results, key), money=True))
@@ -881,10 +884,19 @@ class CostingApp(ctk.CTk):
         self.vars["reference"].set(lot.reference or "")
         self.vars["fabric_type"].set(lot.fabric_type or "")
         self.vars["date"].set(lot.date or "")
-        for key in ("gsm", "width_in", "total_kg", "rate_per_meter",
-                    "transport_cost"):
+        for key in ("gsm", "width_in", "rate_per_meter", "transport_cost"):
             val = getattr(lot, key)
             self.vars[key].set("" if val is None else str(val))
+
+        # Files store the weight (kg, for compatibility); the UI shows meters.
+        # Derive meters back via the same formula compute() uses; blank if the
+        # gsm/width needed for the conversion are missing.
+        meters = ""
+        total_kg = calculations.parse_number(lot.total_kg)
+        kg_per_meter = calculations.kg_from_meters(lot.gsm, lot.width_in, 1)
+        if total_kg is not None and kg_per_meter:
+            meters = f"{total_kg / kg_per_meter:g}"
+        self.vars["total_meters_in"].set(meters)
 
         wastage_val = ""
         table_rows = []
@@ -946,8 +958,8 @@ class CostingApp(ctk.CTk):
         default_base = docs if docs.exists() else Path.home()
         messagebox.showinfo(
             "App files folder",
-            "Choose where the app should keep its files (saved lots and "
-            "settings).\n\n"
+            "Choose where the app should keep its files — saved lots, Excel "
+            "reports, and settings.\n\n"
             'A folder called "Fabric Lot Files" will be created there.\n'
             "(If you press Cancel, it will be created in Documents.)")
         picked = filedialog.askdirectory(
@@ -973,6 +985,12 @@ class CostingApp(ctk.CTk):
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    def _excel_reports_dir(self) -> Path:
+        """The Excel Reports subfolder inside the Fabric Lot Files folder."""
+        d = self._ensure_data_dir() / "Excel Reports"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
     def _organize_data_dir(self, data_dir: Path):
         """Best-effort migration of older layouts into the folder structure.
 
@@ -984,6 +1002,7 @@ class CostingApp(ctk.CTk):
         saved = data_dir / "Saved Lots"
         try:
             saved.mkdir(parents=True, exist_ok=True)
+            (data_dir / "Excel Reports").mkdir(parents=True, exist_ok=True)
         except Exception:  # noqa: BLE001
             return
         old_lots = storage.app_dir() / "lots"
@@ -1061,12 +1080,12 @@ class CostingApp(ctk.CTk):
         products = self._products_for_compute()  # incl. synthesised wastage row
         results = calculations.compute(lot, products)
         # Open in the folder the user last exported to; fall back to the
-        # default reports folder if none is remembered (or it was deleted).
+        # Excel Reports subfolder of the app's own data folder.
         remembered = self._settings.get("export_dir")
         if remembered and Path(remembered).is_dir():
             initialdir = remembered
         else:
-            initialdir = str(reports_dir())
+            initialdir = str(self._excel_reports_dir())
         path = filedialog.asksaveasfilename(
             title="Export to Excel", defaultextension=".xlsx",
             initialdir=initialdir,
@@ -1080,10 +1099,23 @@ class CostingApp(ctk.CTk):
         save_settings(self._ensure_data_dir(), self._settings)
         try:
             excel_export.export(results, lot, path)
-            messagebox.showinfo("Export to Excel",
-                                "Excel file created successfully.")
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Export to Excel", f"Could not export:\n{exc}")
+            return
+        # An exported lot is worth keeping: quick-save its JSON too (to the
+        # lot's bound file, or its default in Saved Lots), so the report and
+        # the reloadable lot can never drift apart.
+        note = ""
+        try:
+            lot_path = self._current_save_path or (
+                self._saved_lots_dir() / storage.default_filename(lot, "json"))
+            storage.save_lot(lot, products, str(lot_path))
+            self._current_save_path = Path(lot_path)
+            note = f"\nLot also saved ({Path(lot_path).name})."
+        except Exception as exc:  # noqa: BLE001 — report, but export succeeded
+            note = f"\nNote: the lot itself could not be saved:\n{exc}"
+        messagebox.showinfo("Export to Excel",
+                            f"Excel file created successfully.{note}")
 
 
 def _fit_scaling_to_screen():

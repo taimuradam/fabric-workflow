@@ -119,8 +119,8 @@ dist\TextileCosting.exe
 
 Double-click it to run. On first launch it asks where to keep its files and
 creates a **"Fabric Lot Files"** folder there (Cancel puts it in Documents)
-containing the app settings and a **"Saved Lots"** subfolder for lot files;
-Excel reports default to `Documents\Fabric Costing Reports\`. Nothing is ever
+containing the app settings plus two subfolders: **"Saved Lots"** for lot files
+and **"Excel Reports"**, the default destination for exports. Nothing is ever
 written next to the `.exe` (only a tiny locator in `%APPDATA%\Fabric Costing\`
 remembers where the folder is), so you can copy `TextileCosting.exe` anywhere —
 desktop, USB drive — it's fully self-contained.
@@ -133,8 +133,15 @@ desktop, USB drive — it's fully self-contained.
 
 ## How the numbers work (business rules)
 
-Entered per lot: **GSM**, **Width (inches)**, **Total KG Received**,
-**Rate per Meter**, **Transport Cost**.
+Entered per lot: **GSM**, **Width (inches)**, **Total Fabric Received (meters)**
+— matching the supplier's invoice — plus **Rate per Meter** and **Transport
+Cost**. The weight is derived from the meters entered:
+
+```
+Total KG Received = Total Meters × (Width_inches × 0.0254) × GSM / 1000
+```
+
+All the formulas below then run on that derived weight, unchanged:
 
 ```
 Meters per KG       = 1000 / (Width_inches × 0.0254 × GSM)

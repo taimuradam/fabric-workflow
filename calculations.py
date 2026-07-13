@@ -123,6 +123,28 @@ class Results:
     recon_sum_weights: float = 0.0
 
 
+def kg_from_meters(gsm, width_in, total_meters) -> Optional[float]:
+    """Derive the lot's weight (kg) from its length in meters.
+
+    The supplier's invoice states fabric in meters, so the UI asks for meters
+    and derives the weight. This is the exact inverse of the meters-per-kg
+    formula in compute(): a strip 1 m long and `width` wide weighs
+    (width_m × GSM) grams, so `meters` of it weigh
+    meters × width_m × GSM / 1000 kg.
+
+    Returns None (tolerantly) when any input is missing, non-numeric, or
+    non-positive — same contract as the rest of this module.
+    """
+    gsm_v = parse_number(gsm)
+    width_v = parse_number(width_in)
+    meters_v = parse_number(total_meters)
+    if not gsm_v or not width_v or meters_v is None:
+        return None
+    if gsm_v <= _EPSILON or width_v <= _EPSILON:
+        return None
+    return meters_v * (width_v * _INCH_TO_METER) * gsm_v / 1000.0
+
+
 def _wastage_weight(products: List[Product]) -> float:
     """Weight of the (first) row flagged as wastage, or 0.0 if none is flagged.
 
