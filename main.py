@@ -1099,10 +1099,23 @@ class CostingApp(ctk.CTk):
         save_settings(self._ensure_data_dir(), self._settings)
         try:
             excel_export.export(results, lot, path)
-            messagebox.showinfo("Export to Excel",
-                                "Excel file created successfully.")
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Export to Excel", f"Could not export:\n{exc}")
+            return
+        # An exported lot is worth keeping: quick-save its JSON too (to the
+        # lot's bound file, or its default in Saved Lots), so the report and
+        # the reloadable lot can never drift apart.
+        note = ""
+        try:
+            lot_path = self._current_save_path or (
+                self._saved_lots_dir() / storage.default_filename(lot, "json"))
+            storage.save_lot(lot, products, str(lot_path))
+            self._current_save_path = Path(lot_path)
+            note = f"\nLot also saved ({Path(lot_path).name})."
+        except Exception as exc:  # noqa: BLE001 — report, but export succeeded
+            note = f"\nNote: the lot itself could not be saved:\n{exc}"
+        messagebox.showinfo("Export to Excel",
+                            f"Excel file created successfully.{note}")
 
 
 def _fit_scaling_to_screen():
