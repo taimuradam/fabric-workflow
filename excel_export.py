@@ -37,6 +37,7 @@ _CURRENCY_FMT = '"Rs" #,##0.00'
 _NUMBER_FMT = "#,##0.00"
 _PIECES_FMT = '#,##0 "pieces"'
 _KG_FMT = '#,##0.00 "kg"'
+_METERS_FMT = '#,##0.00 "m"'
 
 _TITLE_FONT   = Font(bold=True, size=16, color=_TEAL)
 _CONTEXT_FONT = Font(size=10, color=_MUTED)
@@ -137,7 +138,9 @@ def export(results: Results, lot: LotInfo, path: str) -> None:
     label_value("Date", lot.date or "—")
     label_value("GSM", parse_number(lot.gsm), fmt="#,##0")
     label_value("Width (inches)", parse_number(lot.width_in), number=True)
-    label_value("Total KG Received", parse_number(lot.total_kg), fmt=_KG_FMT)
+    # The operator enters meters; the weight is derived from GSM + width.
+    label_value("Total Fabric Received", results.total_meters, fmt=_METERS_FMT)
+    label_value("Total Weight", parse_number(lot.total_kg), fmt=_KG_FMT)
     label_value("Rate per Meter", parse_number(lot.rate_per_meter), money=True)
     label_value("Transport Cost", parse_number(lot.transport_cost), money=True)
     label_value("Wastage", results.wastage_weight or None, fmt=_KG_FMT,
@@ -147,7 +150,6 @@ def export(results: Results, lot: LotInfo, path: str) -> None:
     # -------------------------------------------------------- COST BREAKDOWN
     section("Cost breakdown")
     label_value("Meters per KG", results.meters_per_kg, number=True)
-    label_value("Total Meters", results.total_meters, number=True)
     label_value("Fabric Cost", results.fabric_cost, money=True)
     label_value("Total Cost", results.total_cost, money=True)
     label_value("Base Cost per KG", results.base_cost_per_kg, money=True)
