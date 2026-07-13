@@ -133,15 +133,9 @@ desktop, USB drive — it's fully self-contained.
 
 ## How the numbers work (business rules)
 
-Entered per lot: **GSM**, **Width (inches)**, **Total Fabric Received (meters)**
-— matching the supplier's invoice — plus **Rate per Meter** and **Transport
-Cost**. The weight is derived from the meters entered:
-
-```
-Total KG Received = Total Meters × (Width_inches × 0.0254) × GSM / 1000
-```
-
-All the formulas below then run on that derived weight, unchanged:
+Entered per lot: **GSM**, **Width (inches)**, **Total KG Received**,
+**Rate per Meter**, **Transport Cost**. The equivalent fabric length in meters
+is calculated and shown in the cost breakdown.
 
 ```
 Meters per KG       = 1000 / (Width_inches × 0.0254 × GSM)
