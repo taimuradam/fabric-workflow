@@ -350,9 +350,8 @@ class CostingApp(ctk.CTk):
 
         self.rows = []
         self.vars = {k: ctk.StringVar() for k in (
-            "reference", "fabric_type", "date", "gsm", "width_in",
-            "total_meters_in", "rate_per_meter", "transport_cost",
-            "wastage_kg")}
+            "reference", "fabric_type", "date", "gsm", "width_in", "total_kg",
+            "rate_per_meter", "transport_cost", "wastage_kg")}
 
         self._build_toolbar()
         self._build_body()
@@ -535,11 +534,11 @@ class CostingApp(ctk.CTk):
         self._field(two2, "Width", "width_in", suffix="in", justify="right").grid(
             row=0, column=1, sticky="ew", padx=(5, 0))
 
-        # The supplier's invoice states fabric in METERS; the weight in kg is
-        # derived from GSM + width (see calculations.kg_from_meters) and shown
-        # in the Cost breakdown card.
-        self._field(inner, "Total fabric received", "total_meters_in",
-                    suffix="m", justify="right", height=44,
+        # Weight in kg is what the operator works from (his call, after trying
+        # a meters-based input); the equivalent length in meters is derived and
+        # shown in the Cost breakdown card.
+        self._field(inner, "Total fabric received", "total_kg",
+                    suffix="kg", justify="right", height=44,
                     font=self.font_emph).pack(fill="x")
 
         self._divider(inner)
@@ -672,7 +671,7 @@ class CostingApp(ctk.CTk):
 
         self.breakdown = {}
         rows = [("meters_per_kg", "Meters per kg"),
-                ("total_weight", "Total weight"),
+                ("total_meters", "Total meters"),
                 ("fabric_cost", "Fabric cost"),
                 ("total_cost", "Total cost"),
                 ("base_cost_per_kg", "Base cost / kg"),
@@ -771,12 +770,7 @@ class CostingApp(ctk.CTk):
             date=v["date"].get().strip(),
             gsm=v["gsm"].get(),
             width_in=v["width_in"].get(),
-            # The operator enters meters; the weight the whole calculation
-            # runs on (and the JSON stores) is derived here, so compute(),
-            # reconciliation, and old save files all keep working on kg.
-            total_kg=calculations.kg_from_meters(
-                v["gsm"].get(), v["width_in"].get(),
-                v["total_meters_in"].get()),
+            total_kg=v["total_kg"].get(),
             rate_per_meter=v["rate_per_meter"].get(),
             transport_cost=v["transport_cost"].get(),
         )
@@ -795,9 +789,9 @@ class CostingApp(ctk.CTk):
         self.breakdown["meters_per_kg"].configure(
             text="—" if results.meters_per_kg is None
             else f"{fmt(results.meters_per_kg)} m")
-        derived_kg = calculations.parse_number(lot.total_kg)
-        self.breakdown["total_weight"].configure(
-            text="—" if derived_kg is None else f"{fmt(derived_kg)} kg")
+        self.breakdown["total_meters"].configure(
+            text="—" if results.total_meters is None
+            else f"{fmt(results.total_meters)} m")
         for key in ("fabric_cost", "total_cost", "base_cost_per_kg"):
             self.breakdown[key].configure(
                 text=fmt(getattr(results, key), money=True))
@@ -884,19 +878,10 @@ class CostingApp(ctk.CTk):
         self.vars["reference"].set(lot.reference or "")
         self.vars["fabric_type"].set(lot.fabric_type or "")
         self.vars["date"].set(lot.date or "")
-        for key in ("gsm", "width_in", "rate_per_meter", "transport_cost"):
+        for key in ("gsm", "width_in", "total_kg", "rate_per_meter",
+                    "transport_cost"):
             val = getattr(lot, key)
             self.vars[key].set("" if val is None else str(val))
-
-        # Files store the weight (kg, for compatibility); the UI shows meters.
-        # Derive meters back via the same formula compute() uses; blank if the
-        # gsm/width needed for the conversion are missing.
-        meters = ""
-        total_kg = calculations.parse_number(lot.total_kg)
-        kg_per_meter = calculations.kg_from_meters(lot.gsm, lot.width_in, 1)
-        if total_kg is not None and kg_per_meter:
-            meters = f"{total_kg / kg_per_meter:g}"
-        self.vars["total_meters_in"].set(meters)
 
         wastage_val = ""
         table_rows = []
