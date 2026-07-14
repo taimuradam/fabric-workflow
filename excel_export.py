@@ -242,7 +242,12 @@ def export(results: Results, lot: LotInfo, path: str) -> None:
     label_value("This lot cost you", results.total_cost, money=True,
                 value_font=_BIG_FONT)
     label_value("Spread across", results.total_pieces or None, fmt=_PIECES_FMT)
-    label_value("Fabric used", results.total_weight_produced or None,
+    # Fabric split: make it visible that not all of the fabric became product.
+    used_in_products = results.total_weight_produced - results.wastage_weight
+    label_value("Used in products", used_in_products or None, fmt=_KG_FMT)
+    label_value("Wastage", results.wastage_weight or None, fmt=_KG_FMT,
+                value_font=_ORANGE_FONT)
+    label_value("Total fabric", results.total_weight_produced or None,
                 fmt=_KG_FMT)
 
     # ------------------------------------------------------ fabric balance line

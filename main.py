@@ -717,9 +717,16 @@ class CostingApp(ctk.CTk):
                                          wraplength=250, justify="left")
         self.spread_label.pack(fill="x", pady=(0, 8))
 
+        # Fabric usage split out per the operator's request: the old single
+        # "Fabric used" row lumped products + wastage together (e.g. 118 kg),
+        # hiding that some of it was wasted, not made into anything.
         self.summary = {}
-        for key, label in [("total_pieces", "Total pieces"),
-                           ("fabric_used", "Fabric used")]:
+        for key, label, value_color in [
+            ("total_pieces", "Total pieces", TEXT),
+            ("used_products", "Used in products", TEXT),
+            ("wastage_kg", "Wastage", WASTE_TEXT),
+            ("fabric_total", "Total fabric", TEXT),
+        ]:
             ctk.CTkFrame(inner2, fg_color=HAIRLINE, height=1,
                          corner_radius=0).pack(fill="x")
             line = ctk.CTkFrame(inner2, fg_color="transparent")
@@ -727,7 +734,7 @@ class CostingApp(ctk.CTk):
             ctk.CTkLabel(line, text=label, font=self.font_small,
                          text_color=MUTED, anchor="w").pack(side="left")
             val = ctk.CTkLabel(line, text="—", font=self.font_value,
-                               text_color=TEXT, anchor="e")
+                               text_color=value_color, anchor="e")
             val.pack(side="right")
             self.summary[key] = val
 
@@ -819,7 +826,12 @@ class CostingApp(ctk.CTk):
             self.rupee_label.configure(text="")
         self.summary["total_pieces"].configure(
             text=fmt(results.total_pieces, decimals=0))
-        self.summary["fabric_used"].configure(
+        used_in_products = results.total_weight_produced - results.wastage_weight
+        self.summary["used_products"].configure(
+            text=f"{fmt(used_in_products)} kg")
+        self.summary["wastage_kg"].configure(
+            text=f"{fmt(results.wastage_weight)} kg")
+        self.summary["fabric_total"].configure(
             text=f"{fmt(results.total_weight_produced)} kg")
 
         self._refresh_recon(results, total_kg)
