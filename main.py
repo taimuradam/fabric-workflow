@@ -343,6 +343,13 @@ class CostingApp(ctk.CTk):
         # Where quick-save writes. None until the first save/open; Save As and
         # Open rebind it, so Save always updates "the file this lot lives in".
         self._current_save_path = None
+        # Where Export overwrites. Bound by the first export of a lot, reset by
+        # New Lot / Open, so re-exports update the same file with one click.
+        self._current_export_path = None
+        # Fingerprint of the last saved/loaded state; anything different means
+        # there are unsaved changes (guards New Lot / Open / window close).
+        self._clean_state = ""
+        self._save_flash_job = None
         # The Fabric Lot Files folder (settings + Saved Lots). Found via the
         # per-user locator, or adopted from an older build's layout.
         self._data_dir = read_locator() or self._adopt_legacy_layout()
@@ -367,6 +374,76 @@ class CostingApp(ctk.CTk):
             self.vars[key].trace_add("write", self._update_context)
 
         self._new_lot(confirm=False)
+
+        # Closing the window must never silently discard work.
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ------------------------------------------------------- unsaved changes ---
+    def _state_fingerprint(self) -> str:
+        """Deterministic snapshot of everything the operator can type."""
+        import json
+        return json.dumps({
+            "lot": {k: v.get() for k, v in self.vars.items()},
+            "rows": [[r.name_var.get(), r.weight_var.get(), r.pieces_var.get()]
+                     for r in self.rows],
+        })
+
+    def _is_dirty(self) -> bool:
+        return self._state_fingerprint() != self._clean_state
+
+    def _mark_clean(self):
+        self._clean_state = self._state_fingerprint()
+        self._style_save_button()
+
+    def _confirm_discard(self, what: str) -> bool:
+        """Guard for actions that would discard work. True = go ahead.
+
+        Nothing unsaved -> proceed silently. Otherwise ask: Yes saves first
+        (same file the Save button would use), No discards, Cancel aborts.
+        """
+        if not self._is_dirty():
+            return True
+        answer = messagebox.askyesnocancel(
+            "Unsaved changes", f"You have unsaved changes.\n"
+                               f"Save them before {what}?")
+        if answer is None:          # Cancel — stay exactly where he was
+            return False
+        if answer:                  # Yes — save, then proceed
+            self._save_lot()
+            return not self._is_dirty()  # a failed save must not lose work
+        return True                 # No — discard deliberately
+
+    def _on_close(self):
+        if self._confirm_discard("closing"):
+            self.destroy()
+
+    def _style_save_button(self):
+        """Teal Save button while there is anything unsaved."""
+        dirty = self._is_dirty()
+        if self._save_flash_job is not None:
+            if not dirty:
+                return  # let the "Saved ✓" flash finish undisturbed
+            self.after_cancel(self._save_flash_job)  # typing cancels the flash
+            self._save_flash_job = None
+        if dirty:
+            self.save_btn.configure(text="Save", fg_color=TEAL,
+                                    hover_color=TEAL_HOVER,
+                                    text_color="#ffffff")
+        else:
+            self.save_btn.configure(text="Save", fg_color=SECONDARY,
+                                    hover_color=SECONDARY_H, text_color=TEXT)
+
+    def _flash_saved(self):
+        """Brief 'Saved ✓' on the button instead of a popup to dismiss."""
+        if self._save_flash_job is not None:
+            self.after_cancel(self._save_flash_job)
+        self.save_btn.configure(text="Saved ✓", fg_color=SECONDARY,
+                                hover_color=SECONDARY_H, text_color=TEXT)
+        self._save_flash_job = self.after(1500, self._end_flash)
+
+    def _end_flash(self):
+        self._save_flash_job = None
+        self._style_save_button()
 
     # -------------------------------------------------------------- chrome ---
     def _set_window_icon(self):
@@ -437,9 +514,12 @@ class CostingApp(ctk.CTk):
 
         btn("Export to Excel", self._export_excel, primary=True).pack(
             side="right", padx=(8, 18))
-        for text, cmd in [("Save As", self._save_lot_as),
-                          ("Save", self._save_lot), ("Open", self._open_lot),
-                          ("New Lot", self._new_lot)]:
+        btn("Save As", self._save_lot_as).pack(side="right", padx=(8, 0))
+        # Save doubles as the unsaved-changes indicator: teal while there are
+        # changes to save, secondary when everything is on disk.
+        self.save_btn = btn("Save", self._save_lot)
+        self.save_btn.pack(side="right", padx=(8, 0))
+        for text, cmd in [("Open", self._open_lot), ("New Lot", self._new_lot)]:
             btn(text, cmd).pack(side="right", padx=(8, 0))
         ctk.CTkFrame(self, fg_color=CARD_BORDER, height=1,
                      corner_radius=0).pack(fill="x")
@@ -717,9 +797,16 @@ class CostingApp(ctk.CTk):
                                          wraplength=250, justify="left")
         self.spread_label.pack(fill="x", pady=(0, 8))
 
+        # Fabric usage split out per the operator's request: the old single
+        # "Fabric used" row lumped products + wastage together (e.g. 118 kg),
+        # hiding that some of it was wasted, not made into anything.
         self.summary = {}
-        for key, label in [("total_pieces", "Total pieces"),
-                           ("fabric_used", "Fabric used")]:
+        for key, label, value_color in [
+            ("total_pieces", "Total pieces", TEXT),
+            ("used_products", "Used in products", TEXT),
+            ("wastage_kg", "Wastage", WASTE_TEXT),
+            ("fabric_total", "Total fabric", TEXT),
+        ]:
             ctk.CTkFrame(inner2, fg_color=HAIRLINE, height=1,
                          corner_radius=0).pack(fill="x")
             line = ctk.CTkFrame(inner2, fg_color="transparent")
@@ -727,7 +814,7 @@ class CostingApp(ctk.CTk):
             ctk.CTkLabel(line, text=label, font=self.font_small,
                          text_color=MUTED, anchor="w").pack(side="left")
             val = ctk.CTkLabel(line, text="—", font=self.font_value,
-                               text_color=TEXT, anchor="e")
+                               text_color=value_color, anchor="e")
             val.pack(side="right")
             self.summary[key] = val
 
@@ -819,10 +906,16 @@ class CostingApp(ctk.CTk):
             self.rupee_label.configure(text="")
         self.summary["total_pieces"].configure(
             text=fmt(results.total_pieces, decimals=0))
-        self.summary["fabric_used"].configure(
+        used_in_products = results.total_weight_produced - results.wastage_weight
+        self.summary["used_products"].configure(
+            text=f"{fmt(used_in_products)} kg")
+        self.summary["wastage_kg"].configure(
+            text=f"{fmt(results.wastage_weight)} kg")
+        self.summary["fabric_total"].configure(
             text=f"{fmt(results.total_weight_produced)} kg")
 
         self._refresh_recon(results, total_kg)
+        self._style_save_button()
         self._schedule_header_sync()
 
     def _refresh_recon(self, results, total_kg):
@@ -856,16 +949,19 @@ class CostingApp(ctk.CTk):
         self.rows.clear()
 
     def _new_lot(self, confirm=True):
-        if confirm and not messagebox.askyesno(
-                "New Lot", "Clear all fields and start a new lot?"):
+        # No generic "are you sure?" — the only thing worth asking about is
+        # unsaved work, and _confirm_discard only asks when there is some.
+        if confirm and not self._confirm_discard("starting a new lot"):
             return
-        self._current_save_path = None  # a fresh lot isn't bound to a file yet
+        self._current_save_path = None    # a fresh lot isn't bound to a file
+        self._current_export_path = None  # nor to an Excel report
         for key, var in self.vars.items():
             var.set(date.today().isoformat() if key == "date" else "")
         self._clear_rows()
         self._add_row(Product(name=""))
         self._add_row(Product(name=""))
         self.recompute()
+        self._mark_clean()
 
     def _load_into_ui(self, lot, products):
         """Populate the UI from a loaded lot.
@@ -899,6 +995,7 @@ class CostingApp(ctk.CTk):
         if not table_rows:
             self._add_row(Product(name=""))
         self.recompute()
+        self._mark_clean()
 
     # ------------------------------------------------------ app data folder ---
     def _adopt_legacy_layout(self):
@@ -1041,11 +1138,15 @@ class CostingApp(ctk.CTk):
         try:
             storage.save_lot(lot, products, str(path))
             self._current_save_path = Path(path)
-            messagebox.showinfo("Save Lot", f"Saved {Path(path).name}")
+            # No popup to dismiss: the Save button flashes "Saved ✓" instead.
+            self._mark_clean()
+            self._flash_saved()
         except Exception as exc:  # noqa: BLE001 — surface any IO error friendly
             messagebox.showerror("Save Lot", f"Could not save the lot:\n{exc}")
 
     def _open_lot(self):
+        if not self._confirm_discard("opening another lot"):
+            return
         path = filedialog.askopenfilename(
             title="Open Lot", initialdir=str(self._saved_lots_dir()),
             filetypes=[("Lot files", "*.json"), ("All files", "*.*")],
@@ -1055,8 +1156,10 @@ class CostingApp(ctk.CTk):
         try:
             lot, products = storage.load_lot(path)
             self._load_into_ui(lot, products)
-            # Quick saves now update the file that was opened.
+            # Quick saves now update the file that was opened; the next export
+            # of this lot asks where to put its report once.
             self._current_save_path = Path(path)
+            self._current_export_path = None
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Open Lot", f"Could not open the lot:\n{exc}")
 
@@ -1064,26 +1167,34 @@ class CostingApp(ctk.CTk):
         lot = self._current_lot()
         products = self._products_for_compute()  # incl. synthesised wastage row
         results = calculations.compute(lot, products)
-        # Open in the folder the user last exported to; fall back to the
-        # Excel Reports subfolder of the app's own data folder.
-        remembered = self._settings.get("export_dir")
-        if remembered and Path(remembered).is_dir():
-            initialdir = remembered
+        # Re-exports of the same lot overwrite its report with one click: the
+        # first export binds a file, New Lot / Open reset the binding.
+        bound = self._current_export_path
+        updating = bound is not None and bound.parent.is_dir()
+        if updating:
+            path = str(bound)
         else:
-            initialdir = str(self._excel_reports_dir())
-        path = filedialog.asksaveasfilename(
-            title="Export to Excel", defaultextension=".xlsx",
-            initialdir=initialdir,
-            initialfile=report_filename(lot),
-            filetypes=[("Excel files", "*.xlsx")],
-        )
-        if not path:
-            return
-        # Remember wherever the user actually saved for next time.
-        self._settings["export_dir"] = str(Path(path).parent)
-        save_settings(self._ensure_data_dir(), self._settings)
+            # Open in the folder the user last exported to; fall back to the
+            # Excel Reports subfolder of the app's own data folder.
+            remembered = self._settings.get("export_dir")
+            if remembered and Path(remembered).is_dir():
+                initialdir = remembered
+            else:
+                initialdir = str(self._excel_reports_dir())
+            path = filedialog.asksaveasfilename(
+                title="Export to Excel", defaultextension=".xlsx",
+                initialdir=initialdir,
+                initialfile=report_filename(lot),
+                filetypes=[("Excel files", "*.xlsx")],
+            )
+            if not path:
+                return
+            # Remember wherever the user actually saved for next time.
+            self._settings["export_dir"] = str(Path(path).parent)
+            save_settings(self._ensure_data_dir(), self._settings)
         try:
             excel_export.export(results, lot, path)
+            self._current_export_path = Path(path)
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Export to Excel", f"Could not export:\n{exc}")
             return
@@ -1096,11 +1207,14 @@ class CostingApp(ctk.CTk):
                 self._saved_lots_dir() / storage.default_filename(lot, "json"))
             storage.save_lot(lot, products, str(lot_path))
             self._current_save_path = Path(lot_path)
+            self._mark_clean()
             note = f"\nLot also saved ({Path(lot_path).name})."
         except Exception as exc:  # noqa: BLE001 — report, but export succeeded
             note = f"\nNote: the lot itself could not be saved:\n{exc}"
-        messagebox.showinfo("Export to Excel",
-                            f"Excel file created successfully.{note}")
+        verb = "updated" if updating else "created"
+        messagebox.showinfo(
+            "Export to Excel",
+            f"Excel report {verb} ({Path(path).name}).{note}")
 
 
 def _fit_scaling_to_screen():
